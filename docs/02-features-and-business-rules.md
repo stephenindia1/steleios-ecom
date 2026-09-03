@@ -1161,7 +1161,7 @@ The storefront takes **orders**, not payments (ADR 0008). A customer chooses how
 | BR-STO-02 | `[MONEY]` Stock is reserved at order placement exactly as at checkout (BR-CHK-01, BR-BAT-11). The reservation is what stops the shop selling the same unit twice while a customer arranges payment. |
 | BR-STO-03 | `[MONEY]` A UPI order's reservation window is longer than a card checkout's — the customer may pay minutes later — but it is bounded and stated to the customer. On expiry the order is cancelled and the stock released (BR-CHK-09). |
 | BR-STO-04 | `[LEGAL]` The customer is shown, before confirming: the amount, how to pay, and what happens if they do not. No ambiguity about whether an order is paid. |
-| BR-STO-05 | The UPI QR displayed is the **shop's own static QR** with the amount and the order number shown alongside it as text. Steleios does not generate a dynamic payment QR, because generating one would imply a verification it cannot perform (BR-CPM-09). |
+| BR-STO-05 | Payment details reach the customer by one of two routes, both of which the shop controls: **the delivery person presents the shop's QR at handover**, or **the shop sends its UPI number** with the order confirmation. The storefront may also display the shop's static QR. Steleios never generates a dynamic payment QR, because generating one would imply a verification it cannot perform (BR-CPM-09). |
 | BR-STO-06 | `[MONEY]` The customer submits their **transaction reference** after paying, and a member of staff confirms receipt against the shop's own bank or UPI app before the order advances. A customer-entered reference alone is a claim, never a confirmation. |
 | BR-STO-07 | `[SEC]` A customer-supplied reference is untrusted input: format-validated, checked for reuse across all payments (BR-CPM-06), and never trusted to release goods on its own. |
 | BR-STO-08 | `[MONEY]` **Payment-on-delivery orders carry delivery risk.** A refused delivery costs the shop the trip and returns the stock. Risk controls apply as they did for COD: pincode serviceability, an order-value cap, phone verification, and a refusal history check (BR-COD-01, BR-COD-02, BR-COD-04). |
@@ -1169,6 +1169,21 @@ The storefront takes **orders**, not payments (ADR 0008). A customer chooses how
 | BR-STO-10 | `[LEGAL]` The invoice is issued when the goods go out, not when payment clears, because the supply has happened (BR-DOC-13). An unpaid invoice is a receivable, which is what the ageing report is for (BR-DOC-42). |
 | BR-STO-11 | Order status is honest to the customer throughout: placed, awaiting payment, payment received, packed, dispatched, delivered. "Awaiting payment" is never dressed up as "processing". |
 | BR-STO-12 | `[MONEY]` An order abandoned without payment releases its stock and is recorded as abandoned. Abandonment rate by payment method is reported — if UPI orders abandon far more than delivery ones, that is a finding worth acting on. |
+
+### 9A.1 Where the payment details come from
+
+Money is collected outside the system, so **the one thing the system must get right is that the customer pays the shop and not somebody else.** Both routes are attack surfaces, and the controls differ.
+
+| ID | Rule |
+|---|---|
+| BR-STO-20 | `[SEC][MONEY]` The shop's UPI identifier is **configuration held on the shop record**, verified once at onboarding. It is never entered per order, never typed by a delivery person, and never taken from a form. A per-order payee field would be a way to redirect a shop's takings one order at a time. |
+| BR-STO-21 | `[SEC][MONEY]` **A delivery person presents the shop's QR, never their own.** Money reaching a delivery person's personal UPI instead of the shop's is the most likely fraud in this design, and the control is that the QR comes from the shop record in the app, not from the person's phone. |
+| BR-STO-22 | `[MONEY]` Cash and UPI collected by a delivery person are reconciled **against their round**, not only against each order: what they took out, what they brought back, what was recorded. A round that does not balance is an exception naming that person (BR-CPM-21). |
+| BR-STO-23 | `[SEC]` Changing the shop's UPI identifier requires the `owner` role, re-authentication, and an audit entry, and notifies the owner out-of-band. It is the single highest-value configuration field in the system: whoever controls it controls where the money goes. |
+| BR-STO-24 | `[SEC][LEGAL]` Payment details sent to a customer go out on the registered channel and template (BR-CMP-12), drawn from the shop record. Steleios MUST NOT send a payment identifier supplied in a request. |
+| BR-STO-25 | `[SEC]` The shop's UPI identifier is shown to the customer **consistently across every touchpoint** — order confirmation, message, delivery. A payment identifier that varies between messages is the signature of a phishing attempt, and consistency is what lets a customer notice one. |
+| BR-STO-26 | `[SEC]` The customer is told, in the confirmation, to pay only the identifier shown by the shop and never one sent by anyone else. Customers are the ones targeted by this fraud, and a plain warning costs nothing. |
+| BR-STO-27 | `[MONEY]` A reference the customer submits is matched to a payment actually seen in the shop's account before goods are released (BR-STO-06). Where goods are already handed over at delivery, the collection is the delivery person's responsibility and reconciles against their round (BR-STO-22). |
 
 ---
 
