@@ -20,6 +20,8 @@ Read the document that governs what you are touching. Do not infer a rule that i
 | [docs/05-data-access-and-performance.md](docs/05-data-access-and-performance.md) | Query complexity, Redis, sessions, queue, `DB-*` / `RD-*` / `SES-*` / `QUE-*` |
 | [docs/06-observability-and-event-logging.md](docs/06-observability-and-event-logging.md) | Logging, domain events, audit, metrics, tracing, `OBS-*` / `EVT-*` / `LOG-*` |
 | [docs/07-seo-and-ai-discoverability.md](docs/07-seo-and-ai-discoverability.md) | SSR, structured data, crawl architecture, AI answer surfaces, `SEO-*` |
+| [docs/08-design-system.md](docs/08-design-system.md) | Palette, icons, type, motion, `DS-*` |
+| [docs/09-licensing-and-activation.md](docs/09-licensing-and-activation.md) | Activation, entitlements, expiry behaviour, `BR-LIC-*` |
 
 Every rule has a stable ID. **Cite the ID in code comments, test names, commit messages and PR descriptions.** A rule without a citation in the code that implements it is unenforced.
 

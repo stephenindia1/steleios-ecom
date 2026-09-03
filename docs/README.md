@@ -11,6 +11,8 @@ The engraved, binding rules for this project. [`../CLAUDE.md`](../CLAUDE.md) is 
 | [05-data-access-and-performance.md](05-data-access-and-performance.md) | Query complexity, Redis, sessions, queue, budgets | `DB-*` `RD-*` `SES-*` `QUE-*` `API-*` `PRF-*` |
 | [06-observability-and-event-logging.md](06-observability-and-event-logging.md) | Logging, domain events, audit, metrics, tracing, probing | `OBS-*` `EVT-*` `LOG-*` `MET-*` `TRC-*` `PRB-*` `HLT-*` |
 | [07-seo-and-ai-discoverability.md](07-seo-and-ai-discoverability.md) | SSR, structured data, crawl architecture, AI answer surfaces | `SEO-*` |
+| [08-design-system.md](08-design-system.md) | Pastel palette with verified contrast, multi-tone icons, type and motion | `DS-*` |
+| [09-licensing-and-activation.md](09-licensing-and-activation.md) | Activation codes, offline verification, entitlements, perpetual fallback | `BR-LIC-*` |
 
 ## Business rule sections (doc 02)
 
