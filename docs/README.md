@@ -13,6 +13,17 @@ The engraved, binding rules for this project. [`../CLAUDE.md`](../CLAUDE.md) is 
 | [07-seo-and-ai-discoverability.md](07-seo-and-ai-discoverability.md) | SSR, structured data, crawl architecture, AI answer surfaces | `SEO-*` |
 | [08-design-system.md](08-design-system.md) | Pastel palette with verified contrast, multi-tone icons, type and motion | `DS-*` |
 | [09-licensing-and-activation.md](09-licensing-and-activation.md) | Activation codes, offline verification, entitlements, perpetual fallback | `BR-LIC-*` |
+| [10-deployment-and-installation.md](10-deployment-and-installation.md) | Hosted instance per shop, local till client, PostgreSQL-only profile | `DEP-*` |
+
+## Decisions
+
+| ADR | Decision |
+|---|---|
+| [0001](decisions/0001-toolchain-and-compatibility.md) | Go 1.27.1, TypeScript 7.0.2, and the checked frontend/backend contract |
+| [0002](decisions/0002-online-only-counter-sales.md) | *Superseded by 0003* — counter online-only |
+| [0003](decisions/0003-offline-counter-sales.md) | Offline counter sales via stock leases; online-only is the default |
+| [0004](decisions/0004-tenancy.md) | Single-tenant now, `tenant_id` everywhere from the first migration |
+| [0005](decisions/0005-hosted-instances-local-tills.md) | Vendor-hosted instance per shop, local till client, PostgreSQL-only |
 
 ## Business rule sections (doc 02)
 
