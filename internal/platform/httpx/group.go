@@ -130,6 +130,10 @@ type Router struct {
 	mux    *chi.Mux
 	deps   Deps
 	routes []RouteInfo
+	// preflighted records the patterns that already have an OPTIONS handler.
+	// Several verbs share a pattern and chi panics on a duplicate registration,
+	// so the first verb to claim a pattern registers its preflight.
+	preflighted map[string]bool
 }
 
 // NewRouter builds the router.
@@ -140,7 +144,7 @@ func NewRouter(d Deps) (*Router, error) {
 	if err := d.validate(); err != nil {
 		return nil, fmt.Errorf("httpx: %w", err)
 	}
-	return &Router{mux: chi.NewMux(), deps: d}, nil
+	return &Router{mux: chi.NewMux(), deps: d, preflighted: map[string]bool{}}, nil
 }
 
 // Group returns a route group mounted at prefix.
@@ -253,6 +257,42 @@ func (g *Group) route(method, pattern string, p policy.Policy, h HandlerFunc) {
 		handler = chain[i](handler)
 	}
 	g.rt.mux.Method(method, full, handler)
+
+	g.rt.registerPreflight(full)
+}
+
+// registerPreflight attaches an OPTIONS handler to a pattern.
+//
+// Without it a browser cannot make ANY cross-origin request that carries a JSON
+// content type or a custom header, because those trigger a preflight and chi
+// answers 405 for an unregistered method — before the CORS middleware runs, so
+// the middleware's own OPTIONS branch is never reached. That failure is
+// invisible from the server's side and looks like a CORS misconfiguration from
+// the browser's.
+//
+// It is attached automatically rather than declared by a module, because a
+// preflight is a property of the ROUTE EXISTING, not a decision anyone should
+// have to remember. Forgetting it on one route is exactly the bug this replaces.
+func (rt *Router) registerPreflight(pattern string) {
+	if rt.preflighted[pattern] {
+		return
+	}
+	rt.preflighted[pattern] = true
+
+	// The cors middleware answers OPTIONS itself, so this handler is unreachable
+	// in practice. It returns 204 rather than panicking, because "unreachable"
+	// should degrade to the correct answer rather than to a 500.
+	noContent := func(context.Context, *Request) (Response, error) {
+		return NoContent(), nil
+	}
+
+	p := policy.Preflight
+	chain := rt.chain(p)
+	handler := rt.adapt(p, noContent)
+	for i := len(chain) - 1; i >= 0; i-- {
+		handler = chain[i](handler)
+	}
+	rt.mux.Method(http.MethodOptions, pattern, handler)
 }
 
 // requirementsFor reports dependencies a policy needs that the router does not

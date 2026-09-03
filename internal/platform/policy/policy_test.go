@@ -230,6 +230,12 @@ func TestPublicSurfaceIsSmallAndDeliberate(t *testing.T) {
 		"probe":         true,
 		"auth.attempt":  true,
 		"auth.otp.send": true,
+		// A CORS preflight carries no credentials by definition — the browser
+		// sends OPTIONS with no cookies and none of the headers it is asking
+		// about — so there is nothing for it to authenticate. It reveals only
+		// which origins are allowlisted, to a caller who could discover that by
+		// trying.
+		"cors.preflight": true,
 	}
 
 	for _, p := range policy.All() {
@@ -256,6 +262,11 @@ func TestStateChangingPoliciesRequireCSRF(t *testing.T) {
 	readOnly := map[string]bool{
 		"public": true, "public.cached": true, "probe": true,
 		"customer.order.read": true, "admin.read": true,
+		// A preflight changes nothing: it asks whether a request WOULD be
+		// allowed and the answer is a set of headers. Requiring CSRF on it would
+		// make every cross-origin request impossible, since the browser sends no
+		// custom header on a preflight — that is the whole point of sending one.
+		"cors.preflight": true,
 	}
 
 	for _, p := range policy.All() {

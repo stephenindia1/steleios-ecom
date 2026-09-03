@@ -990,3 +990,92 @@ func TestRouteTableLogsWithoutPanicking(t *testing.T) {
 		}
 	}
 }
+
+// TestPreflightIsRegisteredForEveryRoute is the regression test for a bug that
+// would have made the frontend unable to talk to the API at all.
+//
+// OPTIONS was never registered, so chi answered 405 before the CORS middleware
+// ran — which meant the middleware's own OPTIONS branch was unreachable and
+// every preflight failed. A browser sends a preflight for any cross-origin
+// request carrying a JSON content type or a custom header, which is all of
+// them. The failure is invisible server-side and looks like a CORS
+// misconfiguration from the browser.
+func TestPreflightIsRegisteredForEveryRoute(t *testing.T) {
+	t.Parallel()
+
+	rt := mustRouter(t, testDeps())
+	g := rt.Group("/api/v1")
+	g.GET("/things", policy.Public, okHandler(nil))
+	g.POST("/things", policy.AuthAttempt, okHandler(nil))
+	g.GET("/things/{id}", policy.Public, okHandler(nil))
+
+	for _, path := range []string{"/api/v1/things", "/api/v1/things/abc"} {
+		req := httptest.NewRequest(http.MethodOptions, path, nil)
+		req.Header.Set("Origin", "https://shop.example")
+		req.Header.Set("Access-Control-Request-Method", "POST")
+		req.Header.Set("Access-Control-Request-Headers", "content-type,x-csrf-token")
+
+		rec := do(rt, req)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("OPTIONS %s = %d, want 204: the browser cannot make any cross-origin request to it", path, rec.Code)
+		}
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://shop.example" {
+			t.Errorf("OPTIONS %s allow-origin = %q, want the requesting origin", path, got)
+		}
+		if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
+			t.Errorf("OPTIONS %s allow-credentials = %q; without it the browser sends no cookies", path, got)
+		}
+		if got := rec.Header().Get("Access-Control-Allow-Headers"); !strings.Contains(got, headerCSRFTokenName) {
+			t.Errorf("OPTIONS %s allow-headers = %q, missing the CSRF header the client must echo", path, got)
+		}
+	}
+}
+
+// headerCSRFTokenName is the wire name of the CSRF header, spelled out here so
+// the test fails if the constant is ever renamed without the frontend knowing.
+const headerCSRFTokenName = "X-CSRF-Token"
+
+// TestPreflightFromAnUnknownOriginGetsNoCORSHeaders confirms the allowlist still
+// does its job on the route that is now registered for every path.
+//
+// The refusal is the ABSENCE of the headers, not a status code: a browser
+// treats a 204 with no Allow-Origin as a denial, and answering 403 instead
+// would tell a scanner which origins are configured.
+func TestPreflightFromAnUnknownOriginGetsNoCORSHeaders(t *testing.T) {
+	t.Parallel()
+
+	rt := mustRouter(t, testDeps())
+	rt.Group("/api/v1").GET("/things", policy.Public, okHandler(nil))
+
+	req := httptest.NewRequest(http.MethodOptions, "/api/v1/things", nil)
+	req.Header.Set("Origin", "https://evil.example")
+	req.Header.Set("Access-Control-Request-Method", "GET")
+
+	rec := do(rt, req)
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("an unlisted origin was allowed: %q", got)
+	}
+}
+
+// TestPreflightIsNotInTheRouteTable keeps the security surface readable.
+//
+// The startup route table is what an operator reads to answer "what protects
+// this endpoint" (SEC-03). Listing an automatic OPTIONS beside every real route
+// would double its length and hide the routes that matter.
+func TestPreflightIsNotInTheRouteTable(t *testing.T) {
+	t.Parallel()
+
+	rt := mustRouter(t, testDeps())
+	g := rt.Group("/api/v1")
+	g.GET("/things", policy.Public, okHandler(nil))
+	g.POST("/things", policy.AuthAttempt, okHandler(nil))
+
+	for _, r := range rt.Routes() {
+		if r.Method == http.MethodOptions {
+			t.Errorf("preflight for %s appears in the route table", r.Pattern)
+		}
+	}
+	if len(rt.Routes()) != 2 {
+		t.Errorf("route table has %d entries, want the 2 real routes", len(rt.Routes()))
+	}
+}

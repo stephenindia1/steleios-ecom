@@ -41,6 +41,26 @@ var (
 		Timeout:   2 * time.Second,
 	}
 
+	// Preflight answers the browser's CORS preflight, and is attached
+	// automatically to every route rather than chosen by a module.
+	//
+	// It is unauthenticated because a preflight carries no credentials BY
+	// DEFINITION: the browser sends OPTIONS with no cookies and none of the
+	// headers being asked about, precisely so that the server can refuse before
+	// the real request is made. There is nothing to authenticate and nothing for
+	// CSRF to protect. It answers 204 with the CORS headers, or — for an origin
+	// that is not allowlisted — 204 with none, which the browser treats as a
+	// refusal.
+	//
+	// Its own IP limit, rather than sharing the route's: a preflight flood must
+	// not consume the budget a real request needs, and vice versa.
+	Preflight = Policy{
+		Name:      "cors.preflight",
+		Auth:      AuthNone,
+		RateLimit: ratelimit.PerIP(600, time.Minute),
+		Timeout:   2 * time.Second,
+	}
+
 	// AuthAttempt covers login, registration, OTP send and password reset:
 	// unauthenticated by necessity and therefore throttled hard, per address
 	// AND per account, because either limit alone is trivially evaded
@@ -287,7 +307,7 @@ var (
 // unprotected (SEC-01, TST-02).
 func All() []Policy {
 	return []Policy{
-		Public, PublicCached, Probe,
+		Public, PublicCached, Probe, Preflight,
 		AuthAttempt, OTPSend, SignedIn,
 		GuestOrSession, CustomerSession,
 		CustomerOrderRead, CustomerOrderWrite, CustomerAddressWrite,
