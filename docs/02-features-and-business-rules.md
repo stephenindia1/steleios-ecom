@@ -855,9 +855,28 @@ The two pull in opposite directions under uncertainty: retrying protects against
 | BR-RCV-33 | The server drains in-flight requests on shutdown within the grace period, so a deploy during a customer's checkout completes their request rather than resetting it. |
 | BR-RCV-34 | Webhook delivery is retried by the provider on any non-2xx, and the handler is idempotent, so a webhook arriving during a restart is simply redelivered (BR-PAY-07, BR-PAY-08). |
 
-### 8A.5 Offline counter sales
+### 8A.5 The counter is online — withdrawn: offline selling
 
-**A sale never stops because connectivity dropped.** See [ADR 0003](decisions/0003-offline-counter-sales.md).
+> **Withdrawn by [ADR 0006](decisions/0006-fully-online.md).** Steleios is fully online. Nothing is installed at the shop, the counter runs in a browser, and there is no offline selling.
+>
+> **Every `BR-OFF-*` rule below is withdrawn and MUST NOT be implemented.** They are retained, struck through in intent rather than deleted, because the lease design they describe is the correct answer *if* offline selling is ever genuinely required — and reintroducing it from scratch would risk arriving at the naive version that oversells stock and charges stale prices. Treat this section as a design already done, not as a backlog.
+
+**What happens during an outage:** the counter stops. The shop falls back to a paper bill book and enters the sales afterwards, which is what most small retailers already do. Mitigation is operational — a 4G hotspot as automatic failover costs a few hundred rupees a month and fixes connectivity for the storefront and the card terminal too.
+
+| ID | Rule |
+|---|---|
+| BR-ONL-01 | `[MONEY]` The counter requires connectivity. Batch allocation, effective price and stock availability are server decisions (BR-SCN-20, BR-BAT-31), and there is no local authority to fall back on. |
+| BR-ONL-02 | An offline till states plainly that it is offline, shows what to do, and retries in the background. A partly entered basket is preserved in the browser so the operator does not re-scan it — **preserving input is not completing a sale**, and only the former happens offline. |
+| BR-ONL-03 | `[MONEY]` A sale MUST NOT be completed, queued or recorded locally while offline. There is no lease, so there is no stock the till may claim. |
+| BR-ONL-04 | Till connectivity is monitored: an offline till emits an event and, past a threshold, alerts. A shop that cannot sell must be visible to someone who can act on it, not only to the operator standing at it (doc 06 §5). |
+| BR-ONL-05 | The scan-to-confirm budget of 200 ms p95 (BR-SCN-35) is now load-bearing: an online-only till turns latency into a queue of customers (doc 05 §7). |
+
+---
+
+#### Withdrawn — the lease design, retained for reference
+
+<details>
+<summary>Offline selling via stock leases (ADR 0003, superseded by ADR 0006)</summary>
 
 The till does not sell from a guess. It sells from a **lease**: specific batches, in specific quantities, at specific prices, reserved to that till in advance by the server. Leased units are already `reserved` in the shared pool, so nobody else can sell them — which is what turns offline selling from an overselling risk into a bounded availability limit.
 
@@ -896,7 +915,7 @@ The till does not sell from a guess. It sells from a **lease**: specific batches
 | ID | Rule |
 |---|---|
 | BR-OFF-20 | `[MONEY]` A till sells offline **only within its lease**. Beyond it, the sale is refused with the reason stated — a refusal, never an oversell. |
-| BR-OFF-21 | `[MONEY]` Offline payment is **cash**, or an externally-settled UPI or card payment whose reference the operator records (§8A.6). Razorpay cannot authorise offline; a till MUST NOT claim a gateway payment succeeded without an approval it cannot have obtained. |
+| BR-OFF-21 | `[MONEY]` Offline payment is **cash**, or an externally-settled UPI or card payment whose reference the operator records (§8A.6). A till MUST NOT claim a payment succeeded without an approval it cannot have obtained. |
 | BR-OFF-22 | `[LEGAL]` Each till has its **own invoice series** with a pre-allocated block, replenished with the lease. GST requires consecutive numbering within a series, not one global sequence, so per-till series stay compliant without a round trip (BR-ORD-10). |
 | BR-OFF-23 | Each offline sale carries a till-generated UUIDv7 identifier, recorded with `sold_offline_at`. That identifier is the idempotency key for sync (BR-OFF-30). |
 | BR-OFF-24 | `[SEC]` Local till storage is encrypted at rest and holds no card data and no customer PII beyond what the receipt requires (BR-DAT-06, BR-PAY-11). |
@@ -923,6 +942,10 @@ The till does not sell from a guess. It sells from a **lease**: specific batches
 | BR-OFF-41 | Unsynced offline revenue is reported daily to finance with its value, so the amount of money recorded only on a device is a number rather than an impression (BR-RCV-24). |
 | BR-OFF-42 | Offline-sale events (`sale.completed_offline`, `sale.synced`, `sale.sync_rejected`, `till.went_offline`, `till.resynced`) are emitted per doc 06 §3, so how much selling actually happens offline is a measurement rather than an assumption. |
 | BR-OFF-43 | The scan-to-confirm budget of 200 ms p95 (BR-SCN-35) still applies online, because latency at a till is a queue of customers (doc 05 §7). |
+
+</details>
+
+*End of withdrawn section. Live rules resume below.*
 
 ### 8A.6 Counter payment methods
 
