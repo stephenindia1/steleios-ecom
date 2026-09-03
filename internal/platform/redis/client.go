@@ -47,6 +47,12 @@ func New(ctx context.Context, cfg config.Redis, log *slog.Logger) (*Client, erro
 		opts.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
 
+	// go-redis logs connection failures to stderr through its own package-level
+	// logger, which produces a second, unstructured log format in the same
+	// stream (LOG-001). Route it through slog so an outage is greppable
+	// alongside everything else.
+	goredis.SetLogger(slogRedisLogger{log: log})
+
 	rdb := goredis.NewClient(opts)
 
 	pingCtx, cancel := context.WithTimeout(ctx, cfg.DialTimeout)
@@ -62,6 +68,16 @@ func New(ctx context.Context, cfg config.Redis, log *slog.Logger) (*Client, erro
 
 // Close releases the connection.
 func (c *Client) Close() error { return c.rdb.Close() }
+
+// slogRedisLogger adapts go-redis's package logger to slog, so a connection
+// failure appears as a structured line rather than as raw text interleaved with
+// the JSON stream (LOG-001).
+type slogRedisLogger struct{ log *slog.Logger }
+
+// Printf implements go-redis's logging interface.
+func (l slogRedisLogger) Printf(ctx context.Context, format string, v ...any) {
+	l.log.WarnContext(ctx, "redis client", "detail", fmt.Sprintf(format, v...))
+}
 
 // Health reports whether Redis is reachable, for readiness (HLT-002).
 func (c *Client) Health(ctx context.Context) error {

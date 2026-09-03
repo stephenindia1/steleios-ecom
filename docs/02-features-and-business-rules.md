@@ -795,6 +795,76 @@ Points serve two purposes, and the second is the more valuable: they give repeat
 
 ---
 
+## 8A. Interruption, recovery and resumption
+
+Connections drop. A customer loses signal mid-payment, closes the tab, or their phone dies between the bank's OTP screen and the return redirect. UPI in particular settles a beat *after* the customer has given up and navigated away.
+
+> **The governing principle: never tell a customer their payment failed when it may have succeeded, and never let a captured payment exist without an order.** Of the two ways to be wrong, silently taking money is far worse than showing a "we're confirming this" state for thirty seconds.
+
+### The two invariants
+
+Everything in this section exists to hold these two, and every rule below cites which one it defends. If a proposed change breaks either, the change is wrong.
+
+| | Invariant | How it is held |
+|---|---|---|
+| **I1** | **A customer is never charged twice for one order.** | One idempotency key per attempt, persisted client-side (BR-RCV-01) · one provider order reused on retry (BR-RCV-02) · provider idempotency keys on every outbound retry (BR-RCV-31) · an unknown outcome is reconciled, never assumed failed and retried (BR-RCV-32) · duplicate capture detected and alerted (BR-RCV-22) |
+| **I2** | **Nothing is lost — no cart, no order, no captured payment, no event.** | Server-owned durable cart (BR-RCV-07) · atomic rollback on cancellation, so there is no partial state (BR-RCV-05) · the webhook confirms the order whether or not the browser returns (BR-RCV-04) · orphan payments detected within 15 minutes (BR-RCV-20) · events written in the same transaction as the change (EVT-001) |
+
+The two pull in opposite directions under uncertainty: retrying protects against loss and risks a double charge; refusing to retry protects against a double charge and risks loss. **The resolution is always the same — do not guess, reconcile.** An unknown outcome is recorded as unknown and resolved against the provider's own record (BR-RCV-21/32), which is the only source that can answer whether money actually moved.
+
+### 8A.1 Resuming an interrupted checkout
+
+| ID | Rule |
+|---|---|
+| BR-RCV-01 | `[MONEY]` The idempotency key for a checkout is generated **once per attempt and persisted client-side with the cart**, so it survives a reload, a crash and a device restart. A retry after any interruption presents the same key and therefore returns the original order rather than creating a second one (BR-CHK-02). |
+| BR-RCV-02 | `[MONEY]` If a customer retries while an unexpired `pending_payment` order exists for their cart, the server **reuses that order and its existing provider order id**. It does not create a second provider order, because two live provider orders for one cart is how a customer gets charged twice. |
+| BR-RCV-03 | On returning to the site, a customer with a `pending_payment` order is shown it, with two clear choices: resume payment, or abandon and release the stock. They are never silently dropped back into an empty cart while their reservation is still held. |
+| BR-RCV-04 | `[MONEY]` A customer who never returns still gets their order. The webhook is the source of truth (BR-PAY-02), so a charge that succeeded is confirmed, stock is committed, and the confirmation email is sent, regardless of whether the browser ever came back. |
+| BR-RCV-05 | `[MONEY]` A request whose context is cancelled mid-transaction rolls back completely. Partial state is impossible: rollback runs on a context detached from the cancelled one, so the failure that caused the cancellation cannot also prevent the cleanup. |
+| BR-RCV-06 | An abandoned `pending_payment` order expires with its reservation and releases the stock (BR-CHK-09, BR-INV-04). Expired orders are retained for funnel analysis (BR-ORD-12). |
+| BR-RCV-07 | A cart survives the interruption. It is server-owned and durable in PostgreSQL, not held in browser state (BR-CRT-01, BR-CRT-10). |
+
+### 8A.2 What the customer sees
+
+| ID | Rule |
+|---|---|
+| BR-RCV-10 | `[MONEY]` When the outcome is not yet known, the storefront shows an explicit **"confirming your payment"** state and polls order status. It MUST NOT report failure on a timeout, a dropped connection, or a missing callback — none of those mean the payment failed. |
+| BR-RCV-11 | The confirming state has a bounded, stated duration and then hands off to "we'll email you as soon as this settles", with the order number visible. A spinner with no end is worse than an honest wait. |
+| BR-RCV-12 | Payment failure is reported **only** on a verified failure signal: a `payment.failed` webhook, or a provider status of failed from the reconciliation poll (BR-RCV-21). |
+| BR-RCV-13 | The client retries safe methods automatically with backoff. It MUST NOT automatically retry a state-changing request without its idempotency key — an automatic retry without one is a duplicate-order generator. |
+| BR-RCV-14 | The order number and the `X-Request-Id` are shown on any error screen, so a customer contacting support gives them everything needed to find what happened (OBS-012, PRB-001). |
+
+### 8A.3 Money without an order — the case that must never be silent
+
+| ID | Rule |
+|---|---|
+| BR-RCV-20 | `[MONEY]` **Orphan payment detection.** A captured payment whose order has not reached `paid` within a configured window (default 15 minutes) raises a **critical alert** and lands on a reconciliation queue. This is the one failure that takes a customer's money and gives them nothing, so it is never left to be discovered by the customer. |
+| BR-RCV-21 | `[MONEY]` A reconciliation job polls the provider for the status of every `pending_payment` order older than the reservation window. Webhooks are the primary path; this is the belt-and-braces path for a webhook that was never delivered. It is idempotent and resolves through the same ledger (BR-PAY-07). |
+| BR-RCV-22 | `[MONEY]` **Duplicate capture.** Two captured payments against one order raise a critical alert. The excess is refunded, but only after human approval — an automatic refund on a detection rule is itself a way to lose money to a false positive. |
+| BR-RCV-23 | `[MONEY]` An amount mismatch between the captured payment and the stored order total never marks the order paid; it alerts for manual review (BR-PAY-09). |
+| BR-RCV-24 | `[MONEY]` Orphan payments, duplicate captures, amount mismatches and unresolved `pending_payment` orders are reported daily to finance with their value, so the size of the problem is a number rather than an impression. |
+| BR-RCV-25 | Recovery events are emitted per doc 06 §3: `checkout.resumed`, `checkout.abandoned`, `payment.orphan_detected`, `payment.duplicate_capture`, `payment.reconciled`, `order.expired`. |
+
+### 8A.4 Server-side resilience
+
+| ID | Rule |
+|---|---|
+| BR-RCV-30 | `[MONEY]` No external call happens inside a database transaction (MOD-09). A provider timeout must never hold locks, and a rollback must never need to un-do a charge. |
+| BR-RCV-31 | Every outbound provider call carries a deadline and a bounded retry with backoff and jitter (GO-033). A retried create-order call carries the provider's idempotency key so the retry cannot create a second provider order. |
+| BR-RCV-32 | `[MONEY]` A provider call whose outcome is **unknown** — a timeout, a connection reset — is recorded as unknown and resolved by reconciliation. It is never assumed to have failed, because assuming failure is what produces the second charge. |
+| BR-RCV-33 | The server drains in-flight requests on shutdown within the grace period, so a deploy during a customer's checkout completes their request rather than resetting it. |
+| BR-RCV-34 | Webhook delivery is retried by the provider on any non-2xx, and the handler is idempotent, so a webhook arriving during a restart is simply redelivered (BR-PAY-07, BR-PAY-08). |
+
+### 8A.5 The counter, offline
+
+| ID | Rule |
+|---|---|
+| BR-RCV-40 | `[MONEY]` A counter till that cannot reach the server **refuses to complete a sale** rather than queuing it. Batch allocation, effective price and stock availability are server decisions (BR-SCN-20, BR-BAT-31); a till deciding them alone would oversell stock and could charge the wrong price for a marked-down batch. |
+| BR-RCV-41 | The till states plainly that it is offline, and retries in the background. A partially entered sale is preserved locally so the operator does not re-scan a full basket when the connection returns. |
+| BR-RCV-42 | **Open decision.** True offline-capable POS — queue-and-forward with local stock reservation — is out of scope for launch and MUST NOT be added without deciding how overselling and marked-down pricing are handled offline. Recorded in `docs/decisions/`. |
+
+---
+
 ## 9. Payments
 
 ### Features
