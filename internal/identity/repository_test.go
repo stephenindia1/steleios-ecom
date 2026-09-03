@@ -300,3 +300,51 @@ func TestTheApplicationRoleStillCannotReadStaffDirectly(t *testing.T) {
 		}
 	}
 }
+
+// TestTheDatabaseRoleCatalogueMatchesTheCode is what stops the two lists
+// drifting apart again.
+//
+// staff_role_assignments.role_code has a foreign key to staff_roles, so a role
+// that authz grants actions to but the table does not list cannot be assigned
+// to anyone — it exists in the code, is documented, is reasoned about, and does
+// nothing. That is exactly what had happened to delivery, saas_admin and
+// saas_support (migration 00018).
+//
+// The reverse direction matters too: a code in the table that authz does not
+// know is a role that can be granted and confers nothing, which is worse,
+// because the grant appears to have worked.
+func TestTheDatabaseRoleCatalogueMatchesTheCode(t *testing.T) {
+	conn := adminConn(t)
+	ctx := context.Background()
+
+	rows, err := conn.Query(ctx, `select code from staff_roles order by code`)
+	if err != nil {
+		t.Fatalf("read staff_roles: %v", err)
+	}
+	defer rows.Close()
+
+	inDB := map[string]bool{}
+	for rows.Next() {
+		var code string
+		if err := rows.Scan(&code); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		inDB[code] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+
+	inCode := map[string]bool{}
+	for _, r := range authz.AllRoles() {
+		inCode[string(r)] = true
+		if !inDB[string(r)] {
+			t.Errorf("authz grants actions to %q but staff_roles does not list it: it cannot be assigned to anybody", r)
+		}
+	}
+	for code := range inDB {
+		if !inCode[code] {
+			t.Errorf("staff_roles lists %q but authz grants it nothing: granting it would appear to work and confer no access", code)
+		}
+	}
+}

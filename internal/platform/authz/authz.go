@@ -141,6 +141,24 @@ const (
 // test and the admin UI cannot drift from each other.
 func PlatformRoles() []Role { return []Role{RoleSaaSAdmin, RoleSaaSSupport} }
 
+// AllRoles returns every role the system grants anything to.
+//
+// It is derived from the grant table rather than typed out again, because the
+// two lists drifting is not hypothetical: delivery, saas_admin and saas_support
+// were granted actions here and were missing from the staff_roles table for
+// three migrations, which made them impossible to assign (migration 00018). The
+// integration test compares this against the database.
+//
+// Sorted, so callers and test failures are deterministic.
+func AllRoles() []Role {
+	out := make([]Role, 0, len(grants)) // DB-024
+	for r := range grants {
+		out = append(out, r)
+	}
+	slices.Sort(out)
+	return out
+}
+
 // IsPlatform reports whether r is a vendor-side role.
 func (r Role) IsPlatform() bool { return slices.Contains(PlatformRoles(), r) }
 
