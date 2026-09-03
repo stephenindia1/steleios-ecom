@@ -97,6 +97,31 @@ The capability exists, so it needs governance rather than denial.
 
 ---
 
+## 4A. Collecting the subscription — Razorpay, on the billing boundary only
+
+The owner pays the vendor by **Razorpay**: a subscription for monthly recurring, or a payment link for annual. This is the **only** gateway in the system, and it sits on the vendor↔owner boundary.
+
+> **It is not the shop's payment path.** The shop's own sales are recorded and never processed (ADR 0008). Nothing here touches an order, an invoice, stock or a customer. Conflating the two would reintroduce exactly the risk ADR 0008 removed.
+
+| ID | Rule |
+|---|---|
+| BR-BIL-01 | Billing lives in its own module, **vendor-scoped, outside tenant data**. It reads and writes subscription state; it has no access to a shop's orders, customers or stock (BR-LIC-53). |
+| BR-BIL-02 | `[MONEY]` Monthly billing uses **Razorpay Subscriptions**. Annual may be a subscription or a one-time payment link — annual is simpler and avoids a mandate entirely, so it is the default offer. |
+| BR-BIL-03 | `[LEGAL]` Recurring collection in India requires an **RBI e-mandate** — UPI Autopay or a card mandate — with its pre-debit notification and per-transaction limits. This is handled by Razorpay Subscriptions, not by an in-house scheduler, and an in-house recurring charger MUST NOT be built. |
+| BR-BIL-04 | `[SEC][MONEY]` Subscription state changes **only** on a signature-verified webhook, never on a browser redirect. The redirect is a UX signal; the webhook is the fact. Same discipline as any provider callback. |
+| BR-BIL-05 | `[SEC]` Webhook signatures are verified with `hmac.Equal` over the **raw body**, using the webhook secret — a distinct secret from the API key secret, and not interchangeable in configuration. |
+| BR-BIL-06 | `[MONEY]` Webhook handling is idempotent, keyed on the provider's event id in the existing `webhook_events` ledger. Providers redeliver; a duplicate must not extend a term twice. |
+| BR-BIL-07 | Events handled: `subscription.charged`, `subscription.pending`, `subscription.halted`, `subscription.cancelled`, `payment.failed`, `refund.processed`. Unrecognised events are acknowledged and recorded, never rejected. |
+| BR-BIL-08 | `[MONEY]` A successful charge extends `valid_until` (BR-LIC-05). A failed charge does **not** immediately restrict: it starts the reminder and grace sequence (§3), because a card that expired over a weekend must not close a shop's counter on Monday. |
+| BR-BIL-09 | `[SEC]` Gateway credentials are vendor credentials held in the vendor's environment. They are never per-tenant, never exposed to a shop, and never selectable by anything in a request (test/live is chosen by deployment environment alone). |
+| BR-BIL-10 | `[SEC][LEGAL]` No card data reaches Steleios, here either. Mandates and instruments live with the provider; the system holds provider identifiers and nothing more (BR-CPM-03). |
+| BR-BIL-11 | `[LEGAL]` The vendor issues the owner a **GST invoice** for the subscription. That invoice is the vendor's own outward supply and is entirely separate from the shop's invoice series (BR-DOC-06). |
+| BR-BIL-12 | `[MONEY]` The owner sees their billing history, current plan, next charge date and invoices, and can cancel. A subscription that cannot be cancelled without contacting support is a dark pattern. |
+| BR-BIL-13 | Billing events (`billing.charged`, `billing.failed`, `billing.mandate_created`, `billing.cancelled`, `billing.refunded`) are emitted per doc 06 §3 and audited. |
+| BR-BIL-14 | `[MONEY]` Manual collection — bank transfer against an invoice — remains supported. Early customers are often billed by hand, and the entitlement model must not assume a gateway is in the loop. |
+
+---
+
 ## 5. Vendor side
 
 | ID | Rule |
@@ -105,3 +130,54 @@ The capability exists, so it needs governance rather than denial.
 | BR-LIC-51 | `[SEC]` Vendor administrative access to a tenant's instance is itself audited, and appears in that tenant's audit log. A customer must be able to see when the vendor looked at their data. |
 | BR-LIC-52 | Subscription state, upcoming expiries and lapsed tenants are reported to the vendor, so a shop about to lose its counter is contacted before it happens rather than after. |
 | BR-LIC-53 | `[SEC]` Billing data and shop operational data are separated. The billing system needs the subscription state; it does not need the shop's orders or customers. |
+
+---
+
+## 6. Scope of responsibility
+
+**Steleios records sales and inventory.** That is the product: what was sold, what was received, what is in stock, what was paid, and the documents that go with them.
+
+It is not an accounting package, not a tax agent, and not a payment processor.
+
+### The client's accountant is the client's relationship
+
+| ID | Rule |
+|---|---|
+| BR-RSP-20 | The shop **exports its records and gives them to its own chartered accountant.** The vendor provides the export; it has no relationship with, contract with, or responsibility toward that accountant. |
+| BR-RSP-21 | There is deliberately **no accountant login**. Granting a third party access would make the vendor a party to an arrangement that is entirely the client's. The owner exports and hands the files over — the same way they would from any other system. |
+| BR-RSP-22 | Because the export *is* the provision, it must be genuinely usable rather than a token CSV button: standard soft formats a CA actually works in, complete periods, and every figure traceable to its documents (BR-DOC-60 to BR-DOC-63, BR-DOC-53). An export a CA has to re-key defeats the purpose. |
+| BR-RSP-23 | `[SEC]` Exports contain customer and supplier details, so they require an appropriate role and are audited with the row count and the period. What the shop then does with the file is the shop's responsibility (BR-RPT-05). |
+
+Not processing payments removes several real liabilities. It does not remove all of them, and the difference matters enough to write down before it becomes a dispute.
+
+### What the vendor is genuinely not responsible for
+
+| | Why |
+|---|---|
+| **Handling the shop's money** | It never passes through the system. No PCI scope, no payment-institution role, no funds in flight (ADR 0008). |
+| **Filing GST returns** | The system produces the figures; the shop or its accountant files them (BR-DOC-52). Steleios is not a tax agent. |
+| **Accounting judgement** | Whether a credit is eligible, how something is classified, what is claimed — these are the accountant's decisions, and the system records rather than decides them. |
+| **Whether the money actually arrived** | Reconciliation surfaces the exception; a human resolves it. The system reports the gap, it cannot close it. |
+| **What the shop sells, to whom, at what price** | Entirely theirs. |
+
+### What the vendor absolutely is responsible for
+
+> **We generate the records their accounting is built on, and we are the custodian of those records.** "We only keep records" is not a defence when the records are wrong.
+
+| ID | Rule |
+|---|---|
+| BR-RSP-01 | `[LEGAL][MONEY]` **Correctness of what the system computes.** A wrong GST split, a rate applied from the wrong date, a rounding error, a total that does not match its lines — these are defects, and they land the shop with a wrong invoice or a wrong return. This is why §3 tax rules, `money.Paise` and the single rounding function exist. |
+| BR-RSP-02 | `[LEGAL]` **Integrity of the document trail.** Gapless numbering, immutable issued documents, correction only by credit or debit note. A gap in an invoice series is the shop's problem to explain, and it would be our fault (BR-DOC-01 to BR-DOC-05). |
+| BR-RSP-03 | `[LEGAL]` **Retention and availability.** We host their books. Seven-year retention, backups that have been restore-tested, and export available in every billing state including dormant (BR-DAT-01, BR-LIC-31, DEP-02). Losing a shop's trading history is not recoverable by them, at any price. |
+| BR-RSP-04 | `[MONEY]` **Completeness.** Every sale, return, receipt and payment recorded, with nothing silently dropped. A lost record is worse than a visibly failed one, because nobody goes looking for it. |
+| BR-RSP-05 | `[LEGAL][SEC]` **Confidentiality.** Their books, customers and suppliers, held on our infrastructure, isolated per shop and never visible to another client (ADR 0007). |
+| BR-RSP-06 | `[MONEY]` **Availability.** A hosted system that is down is a shop that cannot trade, with nothing to fall back on (ADR 0006, DEP-05). |
+| BR-RSP-07 | `[LEGAL]` Where the system's output is used for a statutory filing, it must be **traceable to source** — any figure on a return resolves to the documents behind it (BR-DOC-53). An accountant who cannot verify a number will not use it, and should not. |
+
+### How this is stated commercially
+
+| ID | Rule |
+|---|---|
+| BR-RSP-10 | The terms state plainly: Steleios is a system of record, not an accountant, not a tax agent, and not a payment processor. The shop is responsible for its filings, its accounting decisions and its own reconciliation of exceptions the system raises. |
+| BR-RSP-11 | The terms MUST NOT attempt to disclaim responsibility for the correctness, integrity, retention or confidentiality of the records the system itself produces and holds. A disclaimer that broad would be both unenforceable and dishonest, and would misrepresent what the product is for. |
+| BR-RSP-12 | `[LEGAL]` Tax-treatment questions the system deliberately does not answer — time of supply at delivery (BR-TAX-03), GST on loyalty redemption (BR-LOY-07) — are flagged to the shop as requiring their advisor's confirmation, not silently defaulted. |

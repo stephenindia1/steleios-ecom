@@ -5,11 +5,26 @@ Amends [ADR 0001](0001-toolchain-and-compatibility.md) (Razorpay is no longer pa
 
 ## Decision
 
-**Steleios never touches money.** No payment gateway, no card processing, no settlement API, no payment webhooks.
+**Steleios never touches the shop's money.** No payment gateway, no card processing, no settlement API in the commerce path.
 
-Payment happens through the shop's own arrangements — cash, the shop's UPI handle, the shop's card terminal, a bank transfer. Steleios **records what was paid, by what method, with what reference**, for accounting and reconciliation.
+Payment for goods happens through the shop's own arrangements — cash, the shop's UPI handle, the shop's card terminal. Steleios **records what was paid, by what method, with what reference**, for accounting and reconciliation.
 
-Razorpay is removed from the stack.
+### The one exception: the vendor's own billing
+
+Razorpay **is** used, on exactly one boundary: **the shop owner paying the vendor** for their Steleios subscription, monthly or annually.
+
+These are two entirely different money flows and must not be conflated:
+
+| | Shop → its customers | Owner → the vendor |
+|---|---|---|
+| What | Goods sold in the shop or online | The Steleios subscription |
+| Gateway | **None.** Recorded, never processed | **Razorpay** — Subscriptions for recurring, payment link for annual |
+| Whose money | The shop's revenue | The vendor's revenue |
+| Where the code lives | Commerce services, tenant-scoped | Billing, vendor-scoped, outside tenant data (BR-LIC-53) |
+| Who sees it | Shop staff, customers | The owner and the vendor |
+| Failure impact | A recorded payment to reconcile | Subscription lapses into grace (docs/09 §3) |
+
+Everything this ADR says about removing gateway code applies to the **commerce** path. The billing boundary keeps a gateway, and it is small: one subscription per client, charged on a schedule, with webhooks updating a subscription record. It touches no order, no invoice, no stock and no customer.
 
 ## What this means for each channel
 

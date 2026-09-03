@@ -81,6 +81,12 @@ const (
 	// refunds — a return at the till is routed to a manager, because a refund
 	// is the one counter action that moves money outward (BR-ADM-04).
 	RoleCounterSales Role = "counter_sales"
+	// There is deliberately no accountant role. The shop's chartered accountant
+	// is the shop's relationship, not the vendor's: the owner exports the
+	// records and hands them over (docs/09 §6). Granting a third party a login
+	// would make the vendor a party to that arrangement, which is exactly what
+	// is not wanted.
+	//
 	// RoleDelivery is a delivery person: see their assigned deliveries, mark
 	// one delivered, and assert that the customer paid.
 	//
@@ -130,6 +136,14 @@ const (
 	// the shop's account. It is the checker half of a maker-checker control and
 	// MUST NOT be held by anyone who can take a payment (BR-STO-31).
 	ActionPaymentVerify Action = "payment:verify"
+	// ActionDocumentRead reads the document trail: invoices, credit and debit
+	// notes, purchase invoices, delivery challans.
+	ActionDocumentRead Action = "document:read"
+	// ActionDocumentExport exports a period's documents and figures for
+	// accounting. Separate from reading because an export takes a copy of the
+	// shop's books out of the system, and is audited with its row count and
+	// period (BR-DOC-63).
+	ActionDocumentExport Action = "document:export"
 )
 
 // Actor is the principal performing an action.
@@ -182,7 +196,7 @@ var grants = map[Role][]Action{
 	RoleSupport: {
 		ActionOrderRead, ActionOrderWrite, ActionCatalogRead,
 		ActionInventoryRead, ActionCustomerRead, ActionReportRead,
-		ActionPaymentVerify,
+		ActionPaymentVerify, ActionDocumentRead,
 	},
 	RoleOps: {
 		ActionOrderRead, ActionOrderWrite, ActionCatalogRead,
@@ -192,6 +206,7 @@ var grants = map[Role][]Action{
 	RoleFinance: {
 		ActionOrderRead, ActionRefundWrite, ActionCustomerRead,
 		ActionReportRead, ActionPurchasingRead, ActionPaymentVerify,
+		ActionDocumentRead, ActionDocumentExport,
 	},
 	RoleCatalog: {
 		ActionCatalogRead, ActionCatalogWrite, ActionInventoryRead,
@@ -217,7 +232,8 @@ var grants = map[Role][]Action{
 		ActionInventoryRead, ActionInventoryWrite, ActionRefundWrite,
 		ActionPricingWrite, ActionCustomerRead, ActionPurchasingRead,
 		ActionPurchasingWrite, ActionMarketingWrite, ActionLoyaltyWrite,
-		ActionReportRead, ActionPaymentVerify,
+		ActionReportRead, ActionPaymentVerify, ActionDocumentRead,
+		ActionDocumentExport,
 	},
 
 	// A data entry executive maintains product records and nothing else. No
@@ -259,6 +275,7 @@ var everything = []Action{
 	ActionPurchasingRead, ActionPurchasingWrite, ActionMarketingWrite,
 	ActionMarketingExport, ActionLoyaltyWrite, ActionReportRead,
 	ActionUserManage, ActionDeliveryUpdate, ActionPaymentVerify,
+	ActionDocumentRead, ActionDocumentExport,
 }
 
 // ownedResourceTypes are resource types a customer may access by ownership

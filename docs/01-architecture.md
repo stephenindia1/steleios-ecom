@@ -3,7 +3,21 @@
 Technical design for the Steleios commerce platform.
 Companion to [02-features-and-business-rules.md](02-features-and-business-rules.md), which owns the functional spec.
 
-Status: draft · 3 September 2026
+Status: draft · 3 September 2026 — revised after ADRs 0006–0008
+
+---
+
+## What Steleios is
+
+**A hosted, multi-tenant SaaS that runs a shop's counter, stock and books, and its online storefront.** Sold by subscription to shop owners.
+
+Three decisions shape everything below, and each removed more than it added:
+
+| | Decision | Consequence |
+|---|---|---|
+| [ADR 0006](decisions/0006-fully-online.md) | **Fully online.** Nothing installed at the shop. | No offline selling, no stock leases, no sync, no local storage. Licensing collapses to a database row. |
+| [ADR 0007](decisions/0007-multi-tenant-saas.md) | **Multi-tenant.** `client → group → shop`. | Isolation is per **shop**, enforced by PostgreSQL row-level security. |
+| [ADR 0008](decisions/0008-no-payment-processing.md) | **Records payments, never processes them.** | No gateway, no card data, no PCI scope. Reconciliation is the primary financial control. |
 
 ---
 
@@ -11,48 +25,58 @@ Status: draft · 3 September 2026
 
 | Layer | Choice |
 |---|---|
-| Backend | Go — `chi/v5` router, `pgx/v5` + `sqlc`, `goose` migrations, `hibiken/asynq` queue, `log/slog` |
+| Backend | Go — `chi/v5` router, `pgx/v5` + `sqlc`, `goose` migrations, `log/slog` |
 | Frontend (storefront) | Vue 3 + Pinia, SSR via Nuxt 3 — see §6 |
-| Frontend (admin + reporting) | Vue 3 + Pinia, Vite SPA |
-| Tooling | Bun (install, scripts, test), Vite |
-| Database | PostgreSQL |
-| Cache / sessions / queue / rate limit | Redis |
-| Payments | Razorpay (Standard Checkout + Webhooks) |
+| Frontend (admin, counter, delivery) | Vue 3 + Pinia, Vite SPA |
+| Tooling | Bun (install, scripts, test), Vite, TypeScript 7 |
+| Database | PostgreSQL — sessions, cart, queue, rate limiting and idempotency included ([ADR 0005](decisions/0005-hosted-instances-local-tills.md)) |
+| Tenant isolation | PostgreSQL row-level security, `FORCE`, non-superuser app role |
+| Payments (shop → customer) | **None.** Recorded, never processed (ADR 0008) |
+| Payments (owner → vendor) | Razorpay Subscriptions — the platform subscription only, on the billing boundary (docs/09 §4A) |
 | Currency | INR, `int64` paise |
 
-**Deliberately absent.** No ORM — commerce queries get complex and should be readable in review. No `float64` anywhere near money. No separate message broker; Redis + asynq is sufficient until it demonstrably isn't. No microservices at launch: one `api` binary, one `worker` binary, clean package seams so a split stays possible.
+**Deliberately absent.** No ORM — commerce queries get complex and should be readable in review. No `float64` anywhere near money. **No payment gateway, no card data, no payment credentials of any kind.** No Redis at current scale: one datastore means one backup to get right, and the ports are narrow enough that adding it later is an adapter rather than a rewrite (`SessionStore`, `RateLimiter`, `Cache`). No microservices: one `api` binary, one `worker` binary, clean package seams so a split stays possible.
 
 ---
 
 ## 2. Request spine
 
-The standard layering — routes → middleware → services → repositories — with two additions: a webhook lane that bypasses session auth, and an async lane so nothing slow sits in the request path.
+The standard layering — routes → middleware → services → repositories — with two additions: a signature-verified lane that bypasses session auth, and an async lane so nothing slow sits in the request path.
 
 ```
-CLIENTS      storefront (Nuxt)   admin + reporting (Vite SPA)   Razorpay servers
-                    │                      │                          │
-                    ▼                      ▼                          ▼
-ROUTES              chi  /api/v1/*                          POST /webhooks/razorpay
-                    │                                                 │
-                    ▼                                                 ▼
-MIDDLEWARE   request-id → slog → recover → CORS →           raw-body buffer →
-             session → RBAC → rate limit →                  HMAC verify (webhook secret)
-             validate → idempotency                         (no session, no CSRF — by design)
-                    │                                                 │
-                    └──────────────────────┬──────────────────────────┘
-                                           ▼
-SERVICES     catalog · cart · pricing · inventory · order · payment ·
-             shipping · notify · audit · reporting
-                                           │
-                                           ▼
-REPOSITORIES sqlc + pgx          redis client          asynq enqueue
-                    │                  │                     │
-                    ▼                  ▼                     ▼
-STORES        PostgreSQL           Redis          worker: email · invoice ·
-                                                  settlement import · reservation sweeper
+CLIENTS   storefront (Nuxt)  admin (SPA)  counter (SPA)  delivery (SPA)   couriers
+                 │                │            │              │              │
+                 ▼                ▼            ▼              ▼              ▼
+ROUTES                    chi  /api/v1/*                            POST /webhooks/*
+                 │                                                           │
+                 ▼                                                           ▼
+MIDDLEWARE  request-id → slog → recover → CORS → rate-limit(ip) →    raw-body buffer →
+            session → TENANT → RBAC → ownership →                    HMAC verify
+            rate-limit(actor) → validate → idempotency               (no session, no CSRF)
+                 │                                                           │
+                 └────────────────────────────┬──────────────────────────────┘
+                                              ▼
+SERVICES   catalog · cart · pricing · inventory · order · document ·
+           delivery · custody · payment-record · reconciliation ·
+           shipping · notify · audit · reporting
+                                              │
+                                              ▼
+REPOSITORIES              sqlc + pgx              queue enqueue
+                                              │
+                                              ▼
+STORES     PostgreSQL — data, sessions, cart, queue, rate limits, idempotency
+                        row-level security scoped to the current SHOP
+                                              │
+                                              ▼
+WORKERS    invoice render · notifications · statement import ·
+           reservation sweeper · custody ageing · outbox relay
 ```
 
-The webhook lane carries no session and no CSRF token. Its only authentication is the HMAC signature over the **raw** body, so it needs its own route group with body buffering registered *before* any JSON-decoding middleware. That exemption is declared explicitly in the router with a comment stating why (BR-PAY-06).
+Two things in that chain carry most of the weight:
+
+**`TENANT`** resolves the current shop from the session and sets it transaction-locally, so every query below it is confined to that shop by the database itself. The tenant never comes from a request field (ADR 0007).
+
+**The webhook lane** carries no session and no CSRF token — its only authentication is the HMAC signature over the **raw** body, so body buffering is registered *before* any JSON decoding. No payment provider uses it now; courier tracking is its next legitimate consumer. The exemption is declared explicitly in the router with a comment stating why.
 
 ---
 
@@ -214,53 +238,50 @@ Encoded as an explicit Go transition table with an allowed-from set per target �
 
 ---
 
-## 5. Razorpay integration
+## 5. Money without a gateway
+
+Steleios never touches money (ADR 0008). Payment happens through the shop's own cash drawer, UPI handle and card terminal; the system records what was paid and reconciles it.
 
 ```
-1. POST /api/v1/checkout      Go recomputes the cart, reserves stock, creates a local
-                              order (pending_payment), calls Razorpay Orders API with
-                              amount in paise, currency INR, receipt = order.number,
-                              notes = {order_id}. Returns rzp_order_id + public key_id.
+1. Order placed          Stock reserved, price and tax computed server-side.
+   (storefront)          Goods leave on a DELIVERY CHALLAN, not an invoice.
+                         Custody transfers to the named delivery person.
 
-2. Vue opens Razorpay         Client passes only rzp_order_id.
-   Standard Checkout          The amount never travels from the browser.
+2. At the door           Goods photographed. Damaged or refused lines are removed
+                         from the pending invoice before it exists.
 
-3. Browser returns            razorpay_payment_id, razorpay_order_id, razorpay_signature
-   verify: hmac.Equal(HMAC_SHA256(order_id+"|"+payment_id, KEY_SECRET), sig)
-   → this unlocks the confirmation page only. It does NOT mark the order paid.
+3. Acceptance            TAX INVOICE issued - numbered, immutable, final lines only.
+                         The refused lines were never billed, so nothing to credit.
 
-4. POST /webhooks/razorpay    X-Razorpay-Signature = HMAC_SHA256(raw body, WEBHOOK_SECRET)
-   // WEBHOOK_SECRET is a DIFFERENT secret from KEY_SECRET. Read the raw body before
-   // any decoding; compare with hmac.Equal, never ==.
+4. Payment               Customer pays the invoice total to the SHOP's UPI.
+                         Recorded with its reference. Order -> paid_unverified.
+                         Custody and risk transfer to the customer.
 
-   insert into webhook_events (id) values ($eventID) on conflict do nothing
-   → 0 rows?  already processed — return 200 and stop.
-   → else: verify captured amount == stored order total,
-           convert reservation to decrement, transition order -> paid,
-           enqueue invoice + confirmation on asynq, return 200 fast.
+5. Verification          A DIFFERENT person confirms the credit arrived.
+                         Order -> paid. Whoever takes a payment never confirms it.
 
-5. Events handled             payment.captured · payment.failed · order.paid
-                              refund.created  · refund.processed
+6. Reconciliation        Statement import matches credits to recorded payments.
+                         Unmatched past 3 working days -> exception, with its value
+                         and the operator who recorded it.
 ```
 
-**Return 200 quickly and queue the work.** Razorpay retries on non-2xx, and a slow handler turns one event into a pile of duplicates.
+**Nothing in this system verifies a payment at the moment of sale.** Reconciliation is therefore not an audit afterthought — it is the primary financial control of the entire product, and a launch requirement rather than a later phase.
 
-### Security decisions flagged for review
+### What this buys, and what it costs
 
-- Two distinct secrets (`KEY_SECRET`, `WEBHOOK_SECRET`) that must not be interchangeable in config.
-- Constant-time signature comparison via `hmac.Equal`.
-- The webhook route's exemption from session auth and CSRF is intentional and documented in the router.
-- Test/live key selection is by deployment environment only — never influenced by a request field.
+**Buys:** no card data ever, no PCI scope of any size, no gateway credentials to hold or leak, and no customer money in flight through the vendor's software. The worst a bug can do to a payment is **record it wrongly**, which is recoverable, rather than **take it wrongly**, which is not.
+
+**Costs:** an online store without online payment converts worse than one with it. That is a real commercial trade, named rather than discovered (ADR 0008).
 
 ### India specifics that shape the schema
 
-**Tax and invoicing.** GST splits by place of supply: intra-state → CGST + SGST, inter-state → IGST. `place_of_supply` is stored on the order at placement. HSN code per product and the per-line GST breakdown are invoice requirements, so they belong on the snapshot. MRP display is a legal metrology requirement — hence `mrp_paise` beside `price_paise`.
+**Tax and invoicing.** GST splits by place of supply: intra-state to CGST + SGST, inter-state to IGST. `place_of_supply` is stored on the order at placement. HSN code per product and the per-line GST breakdown are invoice requirements, so they belong on the snapshot. MRP display is a legal metrology requirement, hence `mrp_paise` beside `price_paise`.
 
-**Payment behaviour.** UPI dominates and often settles a beat after the customer returns to the site — another reason the callback cannot be the source of truth. COD is a large share of Indian volume and is a real feature: pincode allowlist, order-value cap, phone OTP, and its own state-machine branch. Saved cards go through Razorpay tokenization; card data never reaches Steleios. Subscriptions require RBI e-mandate, so Razorpay Subscriptions rather than an in-house scheduler.
+**Invoice numbering** is gapless per series per shop, allocated only on issue. A cancelled invoice keeps its number and is marked cancelled; deleting it would leave a gap, and a gap is what an auditor asks about first.
 
-**Reconciliation.** Settlements arrive T+2/T+3 net of fees, so the bank amount never matches order totals. Build the settlement import as a worker job early, or finance will build it in spreadsheets and you'll inherit that.
+**Invoice timing** differs by channel: at the counter the invoice issues at the sale; on delivery it issues at the door after acceptance. The latter relies on treating the consignment as sent on approval, which **must be confirmed with the tax advisor before launch** (docs/02 §9A.3).
 
----
+**The inward side matters as much as the outward one.** Purchase invoices are recorded against goods receipts, matched to what actually arrived, and reconciled against GSTR-2B — credit a supplier never filed is not credit the shop can claim.
 
 ## 6. Frontend and session model
 
@@ -306,41 +327,82 @@ One namespace per concern with a stated TTL. Catalog cache is invalidated on wri
 
 ---
 
+
 ## 7. Build order
 
-Sequenced because each phase depends on the one before it: the spine must exist before services can be tested, and inventory must be correct before money touches it.
+Sequenced so that each phase depends only on the ones before it, and so that **the earliest possible phase puts a real shop on the system**. The organising question is not "what is the product" but "what is the smallest thing a shop will pay for and use every day".
 
-**01 · Spine.** Config from env, slog JSON, chi with the full middleware chain, pgx pool, goose migrations, health and readiness, request IDs, one error envelope, Docker Compose with Postgres and Redis, CI green.
-*Ships: a deployable service that does nothing, correctly — with logging, rate limiting and tests already wired.*
+The answer is not the storefront. It is **the counter and the stock**. A shop can live without a website; it cannot live without a till that knows what it has.
 
-**02 · Catalog and the read path.** Products, variants, media, admin CRUD, listing with facets, Redis caching with explicit invalidation, Nuxt storefront browsing real data.
-*Ships: a browsable catalog. The open decisions in §8 must be settled before this phase's migrations land.*
+### The critical path to one live shop
 
-**03 · Identity and cart.** Redis sessions, password + phone OTP login, RBAC middleware, addresses, guest carts with merge-on-login, server-side pricing with GST isolated and unit-tested.
-*Ships: a cart with a total you can trust.*
+**P0 · Spine** — ✅ *complete*
+Config, structured logging, the middleware chain with policy-gated routing, PostgreSQL pool and unit of work, migrations, health and readiness, the error envelope, RBAC, CI. Multi-tenant row-level security proven with cross-tenant tests.
+*Ships: a deployable service that does nothing, correctly — with authorization, rate limiting, audit and tests already wired.*
 
-**04 · Checkout, payment, fulfilment.** Reservations, order state machine, Razorpay orders and webhooks with the event ledger, COD path, invoices, confirmation email on asynq, reservation sweeper.
-*Ships: revenue. The phase not to compress — every shortcut here becomes a reconciliation problem later.*
+**P1 · Tenancy, identity and onboarding**
+Client, shop and group provisioning. Identities, memberships, shop switching, password and phone-OTP login, sessions, the roles from docs/02 §15. Subscription state and entitlement checks.
+*Ships: a real shop can be created and its owner can sign in. Nothing to sell yet — but every later phase needs this, and building it later means retrofitting a tenant into working code.*
 
-**05 · Operations.** Admin order management, refunds, stock adjustment, courier dispatch and tracking, returns, settlement import, audit log surfaced as a per-order timeline.
-*Ships: the ability to run the business without a database client open.*
+**P2 · Catalog, UoM and stock**
+Products, variants, options, media pipeline to object storage, categories, typed attributes with allergens and provenance. Base and sale units with integer conversion. Suppliers, goods receipts, **batches with expiry**, and the FEFO allocation statement.
+*Ships: a shop can put its stock into the system and see what it has. This is the phase that makes Steleios different from a generic till, and it is where the schema decisions are expensive to change.*
 
-**06 · Growth and reporting.** Discount engine, reviews, abandoned-cart recovery, materialized views, reporting dashboard.
-*Ships: the levers you pull once the pipeline works.*
+**P3 · Counter sales — the first revenue-earning phase**
+Code resolution by scan or keypad, the batch chooser, cart and pricing with GST, the order state machine, invoice issue and numbering, payment **recording**, receipt printing.
+*Ships: **a shop can trade on Steleios.** This is the milestone that matters: from here, everything else is improvement rather than prerequisite.*
 
----
+**P4 · Reconciliation and the books**
+Statement import and matching, the exception queue, `paid_unverified` → `paid`, purchase invoices against receipts, credit and debit notes, receivables and payables ageing, GSTR-1 and 3B figures, accounting export.
+*Ships: the shop's books balance. **Not deferrable** — without it nobody can tell whether recorded money actually arrived, which is the whole risk that comes with recording rather than processing payments (ADR 0008).*
 
-## 8. Decisions required before Phase 2
+> **P0–P4 is the product.** A shop running these has a till, stock control with batches and expiry, and books that reconcile. Everything after this point is additional business, not a missing foundation.
 
-Everything above is reversible except these. Each changes a migration that will already hold production rows.
+### After the shop is live
 
-| Decision | Why it's blocking |
+**P5 · Storefront**
+Nuxt SSR product and category pages, structured data, sitemaps, cart, order placement with UPI or payment-on-delivery. Stock shared with the counter from one pool.
+*Ships: the online channel. Its value depends on P2's catalog being properly maintained, which is why it comes after.*
+
+**P6 · Delivery**
+Delivery challans, delivery mode with custody, proof-of-delivery capture, doorstep damage adjustment, invoice at the door, the maker-checker payment confirmation, custody ageing.
+*Ships: fulfilment of storefront orders. Substantial — it carries custody, evidence and a two-person control — and it is worthless before P5 gives it orders to deliver.*
+
+**P7 · Operations depth**
+Returns both directions, RTV, courier integration and tracking, stock adjustments with reasons, the per-order event and audit timeline for support.
+*Ships: running the business without a database client open.*
+
+**P8 · Intelligence and growth**
+Demand forecasting corrected for stockouts, replenishment suggestions capped by shelf life, near-expiry markdown, discounts, campaigns, loyalty, reviews, reporting dashboard.
+*Ships: the levers you pull once the pipeline works. Every one of these is specced, and **not one of them should be built before a shop is trading daily on P0–P4.***
+
+### What is deliberately not in the sequence
+
+| Not built | Why |
 |---|---|
-| Storefront rendering: Nuxt SSR or Vite SPA | Determines whether product pages can rank, and shapes the auth model (SSR needs the session cookie readable server-side). Recommendation: Nuxt. |
-| Single warehouse or multi-location stock | Multi-location makes the inventory key `(variant_id, location_id)` and puts a location on every order line. Retrofitting rewrites every stock query. |
-| INR only, or multi-currency | Multi-currency means prices carry a currency from the first migration. INR-only is much simpler and correct unless already selling abroad. |
-| COD at launch | Adds a branch to the order state machine, an OTP step, and a risk-rules service. Blocks Phase 4. |
-| Search: Postgres FTS + `pg_trgm`, or Meilisearch | Postgres handles a few thousand SKUs with no new infrastructure. The repository interface should hide which one you're on — so only the interface blocks Phase 2. |
+| Payment gateway integration | ADR 0008 — recorded, never processed |
+| Offline selling, stock leases, sync | ADR 0006 — fully online |
+| Signed licence tokens, clock anchors | ADR 0006 — a subscription is a database row |
+| Local installers and updaters | ADR 0006 — nothing is installed at the shop |
+| Cross-shop reporting | ADR 0007 — a separate system, later, on exported data |
+
+### Sequencing judgements worth arguing with
+
+- **Reconciliation (P4) is on the critical path, not in "operations".** With no gateway confirming anything, it is the only mechanism that turns a recorded payment into a known fact. Shipping P3 without it would mean a shop trading with no way to know whether the money arrived.
+- **The storefront comes after the counter.** It is the more exciting half and the weaker business case: a shop's daily pain is stock and the till. It also depends on catalog data that only becomes trustworthy once someone maintains it daily.
+- **Delivery (P6) is bigger than it looks.** Custody, evidence, doorstep adjustment and a two-person control are four features wearing one name. It should not be estimated as "add delivery to orders".
+- **Forecasting is last on purpose.** It needs a year of honest sales history to be worth anything, and a forecast built on three weeks of data is a confident-looking guess.
+
+### Open decisions still blocking
+
+| Decision | Blocks | Why it cannot be deferred |
+|---|---|---|
+| **Invoice timing at delivery** — confirm sale-on-approval treatment with the tax advisor | P6 | Determines whether the invoice issues at the door or at dispatch with credit notes. Same machinery, different flow, and it is a compliance question rather than a design one (docs/02 §9A.3). |
+| **Single or multi-location stock per shop** | P2 | Multi-location makes the inventory key `(variant_id, location_id)` and puts a location on every movement. Retrofitting rewrites every stock query. |
+| **Search: PostgreSQL FTS + `pg_trgm`, or a dedicated engine** | P2 (interface only) | Postgres handles a few thousand SKUs with no new infrastructure. The repository interface must hide which, so only the interface blocks. |
+| **GST treatment of loyalty redemption** (BR-LOY-07) | P8 | Tax advice, not a design choice. |
+
+Everything else that was open in earlier drafts is now decided and recorded in `docs/decisions/`.
 
 ---
 
