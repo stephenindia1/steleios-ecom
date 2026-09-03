@@ -1,0 +1,34 @@
+# Secrets — never committed (BR-SEC-07, GO-084).
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Go build output
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+coverage.*
+
+# Node / Bun
+node_modules/
+.bun/
+dist/
+.nuxt/
+.output/
+.vite/
+*.tsbuildinfo
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local infrastructure state
+/.docker-data/

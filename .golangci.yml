@@ -1,0 +1,223 @@
+# Steleios — lint configuration.
+#
+# This file is the machine-enforced half of the engraved rules. Where a rule in
+# CLAUDE.md or docs/04 can be checked by a tool, it is checked here rather than
+# left to review. Rule IDs are cited on each setting.
+
+run:
+  timeout: 5m
+  tests: true
+
+output:
+  sort-results: true
+
+linters:
+  disable-all: true
+  enable:
+    # correctness
+    - errcheck          # GO-021: errors are never discarded
+    - govet
+    - staticcheck
+    - ineffassign
+    - typecheck
+    - bodyclose
+    - rowserrcheck      # DB-044
+    - sqlclosecheck     # DB-044
+    - noctx             # GO-030/033: no request without a context
+    - contextcheck      # GO-030: context is propagated, not dropped
+    - nilerr
+    - errorlint         # GO-022/024: %w wrapping, errors.Is/As
+    - exhaustive        # GO-045: enum switches are complete
+    - makezero
+    - durationcheck     # GO-073
+    - reassign
+    - protogetter
+
+    # security
+    - gosec
+    - bidichk
+
+    # complexity and readability
+    - gocyclo           # GO-063
+    - nestif            # GO-063
+    - revive
+    - unconvert
+    - unparam
+    - wastedassign
+    - unused
+    - dupl
+
+    # discipline
+    - depguard          # DRY-02: import boundaries
+    - forbidigo         # GO-072, GO-076, GO-080
+    - nolintlint        # GO-004
+    - goconst
+    - misspell
+    - predeclared
+    - importas
+
+linters-settings:
+
+  errcheck:
+    check-type-assertions: true
+    check-blank: true
+
+  gocyclo:
+    min-complexity: 15   # GO-063
+
+  nestif:
+    min-complexity: 4    # GO-063
+
+  dupl:
+    threshold: 120       # DRY-03: copied business logic is a bug, not a style note
+
+  goconst:
+    min-len: 3
+    min-occurrences: 3
+
+  exhaustive:
+    default-signifies-exhaustive: false   # GO-045: unknown enum values must be handled
+
+  errorlint:
+    errorf: true
+    asserts: true
+    comparison: true
+
+  gosec:
+    excludes:
+      - G104   # duplicated by errcheck
+    config:
+      G306: "0600"
+
+  revive:
+    severity: error
+    rules:
+      - name: exported                    # GO-016: doc comments on exported identifiers
+      - name: package-comments            # GO-061: every package documents its responsibility
+      - name: var-naming                  # GO-012: initialisms
+      - name: receiver-naming             # GO-013
+      - name: early-return                # GO-062
+      - name: indent-error-flow           # GO-062: no else after return
+      - name: error-strings               # GO-023
+      - name: error-return
+      - name: error-naming
+      - name: context-as-argument         # GO-030
+      - name: context-keys-type           # GO-034
+      - name: bare-return                 # GO-067
+      - name: unexported-return           # GO-040: accept interfaces, return concrete types
+      - name: confusing-naming
+      - name: deep-exit
+      - name: unhandled-error
+        arguments: ["fmt.Fprintf", "fmt.Fprintln"]
+
+  nolintlint:
+    require-explanation: true   # GO-004
+    require-specific: true      # GO-004
+    allow-unused: false
+
+  forbidigo:
+    analyze-types: true
+    forbid:
+      # GO-072: time comes from the injected clock, so behaviour is testable.
+      - p: '^time\.Now$'
+        msg: "GO-072: use the injected clock.Clock, not time.Now()"
+      # GO-076: randomness for tokens, OTPs and IDs must be cryptographic.
+      - p: '^math/rand.*'
+        msg: "GO-076: use crypto/rand for tokens, OTPs, IDs and nonces"
+      # GO-080: structured logging only.
+      - p: '^fmt\.Print.*$'
+        msg: "GO-080: use log/slog, not fmt.Print*"
+      - p: '^log\.(Print|Fatal|Panic).*$'
+        msg: "GO-080: use log/slog, not the log package"
+      - p: '^println$'
+        msg: "GO-080: use log/slog"
+      # GO-077: secret comparison must be constant time.
+      - p: '^bytes\.Equal$'
+        msg: "GO-077: for secrets and signatures use hmac.Equal or crypto/subtle"
+
+  depguard:
+    rules:
+      # DRY-02 / SEC-02: routing is mounted only through platform/httpx.
+      chi-only-in-httpx:
+        files:
+          - "**/internal/**"
+          - "!**/internal/platform/httpx/**"
+        deny:
+          - pkg: "github.com/go-chi/chi"
+            desc: "SEC-02: register routes through httpx.Group so a Policy is required"
+
+      # DRY-02 / DB-040: pgx lives behind the repository and platform layers.
+      pgx-only-in-data-layer:
+        files:
+          - "**/internal/**"
+          - "!**/internal/platform/postgres/**"
+          - "!**/*repository*.go"
+        deny:
+          - pkg: "github.com/jackc/pgx"
+            desc: "MOD-08: pgx does not appear in service code; use the repository or UnitOfWork"
+
+      # RD-000: go-redis is constructed and used only in platform/redis.
+      redis-only-in-platform:
+        files:
+          - "**/internal/**"
+          - "!**/internal/platform/redis/**"
+        deny:
+          - pkg: "github.com/redis/go-redis"
+            desc: "RD-000: depend on SessionStore / RateLimiter / Cache, not a Redis client"
+
+      # BR-PAY-03/04: signature verification has exactly one implementation.
+      hmac-only-in-payment:
+        files:
+          - "**/internal/**"
+          - "!**/internal/payment/**"
+          - "!**/internal/platform/**"
+        deny:
+          - pkg: "crypto/hmac"
+            desc: "DRY §6.1: signature verification lives in internal/payment only"
+
+      # GO-070: no floating point anywhere near money.
+      no-decimal-libraries:
+        files:
+          - "**/internal/**"
+        deny:
+          - pkg: "github.com/shopspring/decimal"
+            desc: "GO-070: money is int64 paise via platform/money; quantities are integers in base UoM"
+
+      # Standard hygiene.
+      no-deprecated:
+        files:
+          - "$all"
+        deny:
+          - pkg: "io/ioutil"
+            desc: "deprecated: use io and os"
+          - pkg: "github.com/pkg/errors"
+            desc: "GO-022: use the standard library errors package with %w"
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  exclude-use-default: false
+
+  exclude-rules:
+    # Tests may construct infrastructure directly and use fixed randomness.
+    - path: _test\.go
+      linters:
+        - dupl
+        - gosec
+        - depguard
+        - forbidigo
+        - unparam
+
+    # The composition root wires everything, so it necessarily imports widely.
+    - path: 'internal/app/build\.go'
+      linters:
+        - depguard
+
+    # main is allowed to print a startup banner and to construct clients.
+    - path: 'cmd/'
+      linters:
+        - forbidigo
+        - depguard
+
+severity:
+  default-severity: error
