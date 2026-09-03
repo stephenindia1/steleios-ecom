@@ -210,6 +210,88 @@ func TestDeliveryRoleIsMinimal(t *testing.T) {
 	}
 }
 
+func TestPlatformAndShopRolesAreDisjoint(t *testing.T) {
+	t.Parallel()
+
+	// The vendor creates and manages the SaaS; the client owns and operates the
+	// business (docs/09 §6). A platform role that could read a shop's orders
+	// would make the vendor a participant in its customers' businesses — and a
+	// shop role that could provision clients would let one customer reach
+	// another. Both directions are asserted here because both are one careless
+	// grant away.
+	shop := map[authz.Action]bool{}
+	for _, a := range authz.ShopActions() {
+		shop[a] = true
+	}
+	platform := map[authz.Action]bool{}
+	for _, a := range authz.PlatformActions() {
+		platform[a] = true
+	}
+
+	for _, r := range authz.Roles() {
+		held := authz.ActionsFor(r)
+
+		if r.IsPlatform() {
+			for _, a := range held {
+				if shop[a] {
+					t.Errorf("platform role %q holds shop action %q; the vendor must not reach a client's business", r, a)
+				}
+			}
+			continue
+		}
+
+		for _, a := range held {
+			if platform[a] {
+				t.Errorf("shop role %q holds platform action %q; a client must not operate the SaaS", r, a)
+			}
+		}
+	}
+}
+
+func TestSaaSAdminCannotTouchAnyShopData(t *testing.T) {
+	t.Parallel()
+
+	// Stated as its own test because it is the single most important
+	// consequence of the division, and the one somebody will eventually be
+	// tempted to relax "just for support".
+	e := authz.NewRBAC()
+	ctx := context.Background()
+	admin := authz.Actor{ID: "vendor-1", Type: authz.ActorAdmin, Roles: []authz.Role{authz.RoleSaaSAdmin}}
+
+	for _, a := range authz.ShopActions() {
+		if err := e.Can(ctx, admin, a, authz.Resource{Type: "*"}); !errors.Is(err, authz.ErrDenied) {
+			t.Errorf("saas_admin was allowed shop action %q: %v", a, err)
+		}
+	}
+
+	// And it must still be able to do its actual job.
+	for _, a := range []authz.Action{
+		authz.ActionClientManage, authz.ActionSubscriptionManage, authz.ActionPlatformOperate,
+	} {
+		if err := e.Can(ctx, admin, a, authz.Resource{Type: "*"}); err != nil {
+			t.Errorf("saas_admin cannot %q, so it cannot manage the SaaS: %v", a, err)
+		}
+	}
+}
+
+func TestNoShopRoleCanProvisionClients(t *testing.T) {
+	t.Parallel()
+
+	// A shop owner runs their business, not the platform. If an owner could
+	// provision clients, one customer could create or alter another.
+	e := authz.NewRBAC()
+	ctx := context.Background()
+
+	for _, r := range []authz.Role{authz.RoleOwner, authz.RoleAdmin, authz.RoleManager} {
+		actor := authz.Actor{ID: "s", Type: authz.ActorAdmin, Roles: []authz.Role{r}}
+		for _, a := range authz.PlatformActions() {
+			if err := e.Can(ctx, actor, a, authz.Resource{Type: "*"}); !errors.Is(err, authz.ErrDenied) {
+				t.Errorf("shop role %q was allowed platform action %q: %v", r, a, err)
+			}
+		}
+	}
+}
+
 func TestOnlyOwnerAdminAndMarketingCanExportContactData(t *testing.T) {
 	t.Parallel()
 

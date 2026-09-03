@@ -1606,6 +1606,23 @@ Batches expire, arrive damaged, or get recalled. That stock has to leave invento
 
 Roles are defined once, in `internal/platform/authz`, and enforced only through the single enforcer (SEC-10). The table below is the authority; the code mirrors it and privilege-boundary tests assert the shape.
 
+### Two disjoint worlds
+
+> **The vendor creates and manages the SaaS. The client owns and operates the business.** (docs/09 §6)
+
+| World | Roles | Reaches |
+|---|---|---|
+| **Shop** | owner, admin, manager, counter_sales, delivery, data_entry, viewer, support, ops, finance, catalog, marketing, purchasing | Orders, stock, customers, money — confined to one shop by row-level security |
+| **Platform** (vendor) | `saas_admin`, `saas_support` | Which clients exist, their shops, their subscriptions, service health — **and no shop's business data at all** |
+
+| ID | Rule |
+|---|---|
+| BR-ADM-14 | `[SEC]` **The two sets of actions are disjoint.** A platform role holds no shop action; a shop role holds no platform action. A vendor role that could read a shop's orders would make the vendor a participant in its customers' businesses; a shop role that could provision clients would let one customer reach another. Asserted by test in both directions, because both are one careless grant away. |
+| BR-ADM-15 | `[SEC]` `saas_admin` **creates and manages SaaS clients** — onboarding, provisioning shops, subscriptions, suspension — and cannot read or write any order, product, customer or document. |
+| BR-ADM-16 | `[SEC]` `saas_support` is read-only over provisioning and billing, so a subscription question is answerable without reaching into a client's business. |
+| BR-ADM-17 | `[SEC]` `admin` is the **client's own** technical administrator, not the vendor's. The naming is unfortunate and the distinction is load-bearing: the vendor's roles are the `saas_*` ones. |
+| BR-ADM-18 | `[SEC]` Any vendor access to a client's data is exceptional, requires the controls in docs/09 §4, and **appears in that client's own audit log** (BR-LIC-51). A customer can see when the vendor looked at their data. |
+
 | Role | Grants | Deliberately excluded, and why |
 |---|---|---|
 | `owner` | Everything, including user and role management and GST rate changes | — the role that cannot be locked out |

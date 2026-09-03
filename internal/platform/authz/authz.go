@@ -56,15 +56,32 @@ const (
 )
 
 // Role is a named set of permissions granted to staff (docs/02 §15).
+//
+// There are two disjoint worlds of roles, and keeping them apart is a security
+// boundary rather than a naming convention:
+//
+//   - SHOP roles (owner, manager, counter_sales, …) operate a business. They
+//     reach orders, stock, customers and money, confined to one shop by
+//     row-level security.
+//
+//   - PLATFORM roles (saas_admin, saas_support) operate the SaaS itself:
+//     provisioning clients and shops, subscriptions, platform health. They hold
+//     NO shop-data actions at all.
+//
+// The vendor creates and manages the SaaS; the client owns and operates the
+// business (docs/09 §6). A platform role that could read a shop's orders would
+// make the vendor a participant in its customers' businesses, which is exactly
+// what that division rules out. TestPlatformAndShopRolesAreDisjoint asserts it.
 type Role string
 
-// The staff roles. Customers hold no roles; their access is by ownership.
+// The shop roles. Customers hold no roles; their access is by ownership.
 const (
-	// RoleOwner is the business owner: everything, including user and role
-	// management. It is the role that cannot be locked out.
+	// RoleOwner is the business owner: everything in their shop, including user
+	// and role management. It is the role that cannot be locked out.
 	RoleOwner Role = "owner"
-	// RoleAdmin is the platform administrator — the technical counterpart to
-	// owner, with the same grants.
+	// RoleAdmin is the CLIENT's own technical administrator — the owner's
+	// counterpart inside the business, with the same grants. It is not the
+	// vendor: the vendor's roles are the saas_* ones below.
 	RoleAdmin Role = "admin"
 	// RoleManager runs the store day to day: orders, stock, catalog, pricing,
 	// purchasing, marketing and reports. Deliberately NOT user management and
@@ -104,6 +121,28 @@ const (
 	RoleMarketing  Role = "marketing"
 	RolePurchasing Role = "purchasing"
 )
+
+// The platform roles. These belong to the VENDOR and manage the SaaS: which
+// clients exist, their shops, their subscriptions, and the health of the
+// service. They hold no shop-data actions whatsoever.
+const (
+	// RoleSaaSAdmin creates and manages SaaS clients: onboarding a business,
+	// provisioning its shops, managing its subscription, suspending or closing
+	// it. It cannot read or write any shop's orders, stock, customers or
+	// documents.
+	RoleSaaSAdmin Role = "saas_admin"
+	// RoleSaaSSupport is vendor support: read-only over client and subscription
+	// state, so a question about billing or provisioning can be answered
+	// without touching the client's business data.
+	RoleSaaSSupport Role = "saas_support"
+)
+
+// PlatformRoles are the vendor-side roles, kept in one list so the disjointness
+// test and the admin UI cannot drift from each other.
+func PlatformRoles() []Role { return []Role{RoleSaaSAdmin, RoleSaaSSupport} }
+
+// IsPlatform reports whether r is a vendor-side role.
+func (r Role) IsPlatform() bool { return slices.Contains(PlatformRoles(), r) }
 
 // Action is a permission, named `<resource>:<verb>`.
 type Action string
@@ -145,6 +184,54 @@ const (
 	// period (BR-DOC-63).
 	ActionDocumentExport Action = "document:export"
 )
+
+// Platform actions. These operate on the SaaS — which clients exist, their
+// shops and their subscriptions — and never on a shop's business data.
+const (
+	// ActionClientRead reads client and shop provisioning state.
+	ActionClientRead Action = "client:read"
+	// ActionClientManage onboards a client, provisions its shops, and suspends
+	// or closes it.
+	ActionClientManage Action = "client:manage"
+	// ActionSubscriptionRead reads subscription and billing state.
+	ActionSubscriptionRead Action = "subscription:read"
+	// ActionSubscriptionManage issues activation codes, changes plans, and
+	// records or cancels subscriptions.
+	ActionSubscriptionManage Action = "subscription:manage"
+	// ActionPlatformOperate covers service-level operations: health, migrations,
+	// staged rollouts. Not a client's data under any circumstances.
+	ActionPlatformOperate Action = "platform:operate"
+)
+
+// shopActions is every action that touches a client's business. A platform role
+// holding any of these would breach the vendor/client division (docs/09 §6), so
+// the list exists to be asserted against rather than to be read.
+func shopActions() []Action {
+	return []Action{
+		ActionOrderRead, ActionOrderWrite, ActionCatalogRead, ActionCatalogWrite,
+		ActionInventoryRead, ActionInventoryWrite, ActionRefundWrite,
+		ActionPricingWrite, ActionTaxWrite, ActionCustomerRead,
+		ActionPurchasingRead, ActionPurchasingWrite, ActionMarketingWrite,
+		ActionMarketingExport, ActionLoyaltyWrite, ActionReportRead,
+		ActionUserManage, ActionDeliveryUpdate, ActionPaymentVerify,
+		ActionDocumentRead, ActionDocumentExport,
+	}
+}
+
+// platformActions is every action that operates the SaaS.
+func platformActions() []Action {
+	return []Action{
+		ActionClientRead, ActionClientManage,
+		ActionSubscriptionRead, ActionSubscriptionManage,
+		ActionPlatformOperate,
+	}
+}
+
+// ShopActions returns the business-data actions, for tests and admin UIs.
+func ShopActions() []Action { return slices.Clone(shopActions()) }
+
+// PlatformActions returns the SaaS-operation actions.
+func PlatformActions() []Action { return slices.Clone(platformActions()) }
 
 // Actor is the principal performing an action.
 //
@@ -262,6 +349,24 @@ var grants = map[Role][]Action{
 	// of which is the whole point of the maker-checker split.
 	RoleDelivery: {
 		ActionDeliveryUpdate,
+	},
+
+	// ---- Platform roles: the vendor operates the SaaS, not the business ----
+
+	// The vendor's administrator. Creates and manages SaaS clients — onboards a
+	// business, provisions its shops, manages its subscription — and holds no
+	// action that reads or writes a shop's orders, stock, customers or books.
+	RoleSaaSAdmin: {
+		ActionClientRead, ActionClientManage,
+		ActionSubscriptionRead, ActionSubscriptionManage,
+		ActionPlatformOperate,
+	},
+
+	// Vendor support: read-only over provisioning and billing, so a question
+	// about a subscription can be answered without reaching into the client's
+	// business.
+	RoleSaaSSupport: {
+		ActionClientRead, ActionSubscriptionRead,
 	},
 }
 
