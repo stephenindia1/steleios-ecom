@@ -1036,7 +1036,7 @@ This is now the accounting core of the product: a complete, GST-compliant docume
 | BR-DOC-10 | `[LEGAL]` A tax invoice carries: supplier name, address and GSTIN; customer name and address, with GSTIN for a B2B sale; invoice number and date; place of supply; per line the description, HSN, quantity with UQC, unit price, taxable value, and the GST split; the total, and the total in words. |
 | BR-DOC-11 | `[LEGAL]` The GST split follows place of supply — CGST + SGST intra-state, IGST inter-state — using the rate in force on the taxable event date (BR-PRC-04, BR-TAX-02). |
 | BR-DOC-12 | `[LEGAL]` A **bill of supply** is issued instead of a tax invoice for exempt goods or under composition. The two are different documents with different series and MUST NOT be conflated. |
-| BR-DOC-13 | An invoice is issued on transition to `paid` or `paid_unverified` — the goods have gone, so the document is due (BR-ORD-09). |
+| BR-DOC-13 | `[LEGAL]` Invoice timing differs by channel, because the moment the supply is settled differs: **at the counter** the invoice is issued at the sale, since goods and customer are together; **on delivery** the goods travel on a delivery challan and the invoice is issued at the door once the customer has accepted what they are keeping (§9A.3). |
 | BR-DOC-14 | `[LEGAL]` A counter sale's invoice is available as a printed receipt and, where the customer gives contact details, by email or link. |
 
 ### 9.3 Purchase invoices — the inward side
@@ -1223,28 +1223,104 @@ The delivery person asserts. **A different person confirms.**
 | BR-STO-39 | `[SEC]` A delivery person sees only their own assigned deliveries, and only for as long as they are assigned. The `delivery` role grants delivery updates and nothing else — no order browsing, no customer records, no reports. |
 | BR-STO-40 | Both steps emit events (`delivery.completed`, `delivery.payment_asserted`, `payment.verified`, `payment.verification_overdue`) per doc 06 §3, and both are audited (BR-ADM-06). |
 
-### 9A.3 Damage at the door — photograph, approve, adjust
+### 9A.3 Goods travel on a challan; the invoice is raised at the door
 
-A customer should not pay for a damaged item, and should not have to pay in full and wait for a refund. So the delivery person photographs the damage, a manager approves, and the amount due is adjusted **before** the customer pays.
+**The invoice is generated at delivery, once the customer has accepted what they are keeping and immediately before they pay.** Until then it is held ready but unissued.
 
-**The legal wrinkle:** the invoice was issued when the goods left the shop (BR-DOC-13) and issued documents are immutable (BR-DOC-03). So the bill is not edited. A **credit note** is issued for the damaged lines, and the customer pays *invoice minus credit note*. The paperwork is correct and the customer's experience is identical.
+This is better than invoicing at dispatch and correcting afterwards, and the reason is simple: **the damaged lines never reach the invoice at all.** No credit note, no reversal, no adjustment to explain. The customer's invoice states exactly what they received and exactly what they paid, which is also what an auditor and an accountant want to see.
+
+```
+dispatch          delivery challan issued; goods in transit; stock allocated, not sold
+     │
+     ▼
+at the door       customer inspects; damaged or refused lines removed (BR-DMG-*)
+     │
+     ▼
+acceptance        TAX INVOICE issued — numbered, immutable, final lines only
+     │
+     ▼
+payment           customer pays the invoice total by UPI
+```
 
 | ID | Rule |
 |---|---|
-| BR-DMG-01 | The delivery person photographs the damage and raises an adjustment request against specific order lines and quantities, with a reason code (`damaged_in_transit`, `wrong_item`, `short_shipped`, `expired`, `spoiled`). |
+| BR-DLV-01 | `[LEGAL]` Goods leave the shop on a **delivery challan**, not an invoice. The challan carries the consignment, the lines and quantities, and its own series (BR-DOC-01). |
+| BR-DLV-02 | `[MONEY]` Stock is **allocated and in transit**, not sold, from dispatch until acceptance. It is unavailable to other orders and to the storefront, and it is not yet a sale (BR-BAT-15). |
+| BR-DLV-03 | Until issue, the document is a **proforma**: it shows the expected total and is clearly marked *not a tax invoice*. It carries **no invoice number**, because numbers are allocated only on issue and a gap in an invoice series is what an auditor asks about first (BR-DOC-02). |
+| BR-DLV-04 | `[LEGAL][MONEY]` The tax invoice is issued at **acceptance**, containing only the lines the customer is keeping, priced and taxed at the rates in force on that date (BR-TAX-02). It is numbered, immutable and final from that moment (BR-DOC-03). |
+| BR-DLV-05 | `[MONEY]` Payment is taken **after** issue, against the invoice total. The invoice total is the reconciliation target (BR-CPM-20, BR-DMG-08). |
+| BR-DLV-06 | `[MONEY]` Lines never accepted are **never invoiced**. They return on the challan and go to `quarantine` (BR-DMG-12). There is nothing to credit because nothing was billed. |
+| BR-DLV-07 | `[MONEY]` A wholly refused delivery issues **no invoice**. The challan closes as a return, the stock comes back, and the order is recorded as refused with its reason. |
+| BR-DLV-08 | `[LEGAL]` Where the consignment value requires an **e-way bill**, it is raised against the delivery challan and updated on the resulting invoice. |
+| BR-DLV-09 | `[MONEY]` A challan not closed within a configured window is an exception naming the delivery person: goods left the shop and neither returned nor became a sale (BR-STO-36). |
+| BR-DLV-10 | `[LEGAL]` Counter sales are unaffected: goods and customer are together, so the invoice issues at the sale with no challan (BR-DOC-13). |
+
+> **`[LEGAL]` Requires confirmation before launch.** Under GST, a tax invoice for a supply of goods is generally due *before or at the time of removal*. Issuing at delivery instead relies on the consignment being treated as **sent on approval** (Section 31(7) with Rule 55), which permits removal on a delivery challan and an invoice when the supply is confirmed. That treatment is well suited to doorstep inspection, but **it MUST be confirmed with the tax advisor and recorded in `docs/decisions/` before this ships** — invoice timing is not a detail to be decided by whoever writes the code (BR-TAX-03 precedent).
+>
+> If the advisor requires invoicing at dispatch, the fallback is the credit-note flow: invoice at dispatch, credit note for refused lines. It is more paperwork and a worse customer document, but it is a configuration of the same machinery, not a rebuild.
+
+#### Damage and refusal at the door
+
+A customer should not pay for a damaged item, and should not pay in full and wait for a refund. The delivery person photographs the damage, a manager approves, and the lines drop off the invoice before it is issued.
+
+| ID | Rule |
+|---|---|
+| BR-DMG-01 | The delivery person photographs the damage and raises an adjustment against specific challan lines and quantities, with a reason code (`damaged_in_transit`, `wrong_item`, `short_shipped`, `expired`, `spoiled`, `customer_refused`). |
 | BR-DMG-02 | `[SEC][MONEY]` **A delivery person cannot approve their own adjustment.** Approval requires `order:write`, which the `delivery` role does not hold. Without this, "damaged" becomes a discount a delivery person can hand out — or collect the full amount for and keep the difference. |
-| BR-DMG-03 | `[SEC]` Photographs are mandatory for an adjustment: at least one per claimed line. An adjustment with no evidence is refused. |
+| BR-DMG-03 | `[SEC]` Photographs are mandatory: at least one per claimed line. An adjustment with no evidence is refused. |
 | BR-DMG-04 | `[SEC]` Uploads are content-sniffed rather than trusted by declared type, stripped of EXIF — a doorstep photo carries GPS — size-limited, and stored in object storage (BR-MED-06, BR-MED-07). |
 | BR-DMG-05 | Uploads are compressed on the device and retried in the background. A delivery person standing in a lift with one bar must not be blocked by an upload; the request is raised and the photo follows. |
-| BR-DMG-06 | `[LEGAL][MONEY]` An approved adjustment issues a **credit note** against the original invoice for the affected lines, with their tax reversal (BR-DOC-30, BR-DOC-31). The invoice is never edited. |
-| BR-DMG-07 | `[MONEY]` The amount due becomes invoice total minus credit note total, and **that** is the amount shown to the customer and expected in reconciliation (BR-CPM-20). |
-| BR-DMG-08 | `[MONEY]` Because the shop's QR is static and carries no amount (BR-CPM-09), the expected amount is the reconciliation target. A credit received that matches neither the original nor the adjusted total is an exception. |
-| BR-DMG-09 | `[MONEY]` **A response deadline is mandatory** (default 5 minutes). A delivery person cannot stand at a door indefinitely waiting for a manager. On timeout the delivery person chooses: hand over and let the customer pay the original amount, with the adjustment processed as a normal return afterwards; or withhold the affected lines and deliver the rest. Both outcomes are recorded, and the choice is theirs because they are the one present. |
+| BR-DMG-06 | `[MONEY]` An approved adjustment removes the lines from the **pending invoice**. Because nothing has been issued yet, there is no credit note and no reversal — the invoice is simply raised without them. |
+| BR-DMG-07 | `[MONEY]` The customer is shown the adjusted total before the invoice is issued, and pays that amount. |
+| BR-DMG-08 | `[MONEY]` The shop's QR is static and carries no amount (BR-CPM-09), so the issued invoice total is the reconciliation target. A credit matching neither it nor the pre-adjustment total is an exception. |
+| BR-DMG-09 | `[MONEY]` **A response deadline is mandatory** (default 5 minutes). A delivery person cannot stand at a door waiting for a manager. On timeout the delivery person chooses: hand over the disputed lines and invoice in full, with the adjustment processed as a normal return afterwards; or withhold them, so they are simply not invoiced. Both outcomes are recorded, and the choice is theirs because they are the one present. |
 | BR-DMG-10 | Timeout rate is monitored. Managers who routinely miss the window turn a doorstep control into a doorstep argument, and that is a staffing finding rather than a software one. |
-| BR-DMG-11 | `[LEGAL]` The customer acknowledges the adjustment — an OTP to their registered number, or a signature capture — before payment. Without acknowledgement there is nothing to point at when they later dispute what they agreed to. |
-| BR-DMG-12 | `[MONEY]` Rejected lines return to `quarantine`, never to sellable stock, and are written off or returned to the supplier through the normal RTV path (BR-RET-07, §12A). |
+| BR-DMG-11 | `[LEGAL]` The customer acknowledges the final invoice — an OTP to their registered number, or a signature capture — before payment. Without acknowledgement there is nothing to point at when they later dispute what they agreed to. |
+| BR-DMG-12 | `[MONEY]` Refused and damaged lines return to `quarantine`, never to sellable stock, and are written off or returned to the supplier through the normal RTV path (BR-RET-07, §12A). |
 | BR-DMG-13 | `[MONEY]` Damage rates are reported by **reason code, by supplier, by batch and by delivery person**. Damage concentrated in one supplier's batches is a purchasing conversation; damage concentrated on one delivery route is a different conversation entirely. |
-| BR-DMG-14 | Adjustment events (`delivery.adjustment_requested`, `delivery.adjustment_approved`, `delivery.adjustment_rejected`, `delivery.adjustment_timed_out`) are emitted per doc 06 §3, and every approval is audited with the actor, the lines, the value and the evidence (BR-ADM-06). |
+| BR-DMG-14 | Adjustment events (`delivery.adjustment_requested`, `delivery.adjustment_approved`, `delivery.adjustment_rejected`, `delivery.adjustment_timed_out`, `challan.issued`, `challan.closed`, `invoice.issued_at_delivery`) are emitted per doc 06 §3, and every approval is audited with the actor, the lines, the value and the evidence (BR-ADM-06). |
+
+### 9A.4 Delivery mode — custody sits with the delivery person
+
+The app runs in **delivery mode** when a delivery person signs in on a registered device. In that mode they are not just performing steps; they are the **accountable custodian** of the goods they are carrying.
+
+This is what makes the rest of the section enforceable. Without a named custodian, "goods left and never came back" is a discrepancy with no owner, and every control above degrades into a report nobody acts on.
+
+> **Every unit that leaves the shop is in somebody's custody until it is either invoiced and paid for, or physically received back by someone else.** There is no third outcome, and no point at which the goods belong to nobody.
+
+| ID | Rule |
+|---|---|
+| BR-DVM-01 | Delivery mode requires the `delivery` role on a registered device. In it, the app shows assigned consignments and nothing else — no order browsing, no customer records, no catalog (BR-STO-39). |
+| BR-DVM-02 | `[MONEY]` **Custody is accepted explicitly.** At dispatch the delivery person confirms the consignment against the challan, line by line. Custody transfers on their acceptance, not on the dispatcher's assertion — a custodian who never agreed they had the goods cannot fairly be held to them. |
+| BR-DVM-03 | `[MONEY]` A discrepancy at acceptance is raised **then**, against the dispatcher. Once accepted, the goods are the delivery person's responsibility, and that boundary must be unambiguous to both people. |
+| BR-DVM-04 | `[MONEY]` Custody is discharged in exactly two ways: the goods are **invoiced and paid for** by the customer (BR-DLV-04, BR-DLV-05), or they are **physically received back** by another person at the shop. Nothing else closes it. |
+| BR-DVM-05 | `[SEC][MONEY]` **A delivery person cannot discharge their own custody by declaring a return.** A return must be received and confirmed by someone else, or "returned" becomes the way goods disappear — the same maker-checker reasoning as payment verification (BR-STO-31). |
+| BR-DVM-06 | `[MONEY]` Open custody — the value of goods a person is currently carrying — is visible live, per person, and **capped**. Beyond the cap, no further consignment is assigned until some is discharged. This bounds what any single loss can cost. |
+| BR-DVM-07 | `[MONEY]` Custody transfer between people — a route change, a shift ending mid-round — is explicit and requires **both** parties: the outgoing custodian releases, the incoming one accepts, line by line. An unacknowledged transfer leaves custody where it was. |
+| BR-DVM-08 | `[MONEY]` A consignment open past its expected duration ages on a report naming its custodian, with its value (BR-DLV-09). Ageing open custody is the single most useful number for spotting a problem before a stock-take does. |
+| BR-DVM-09 | `[LEGAL]` Handover to the customer is evidenced: the invoice acknowledgement (BR-DMG-11), and where configured a photograph or signature. The custodian's record of discharge must be something other than their own word. |
+| BR-DVM-10 | `[MONEY]` End of round is a reconciliation, not a sign-off: every consignment accounted for as invoiced-and-paid or received-back. A round that does not balance is an exception naming that person, raised the same day rather than at month end. |
+| BR-DVM-11 | Shortfalls, unverified payments and unclosed challans are tracked **per custodian over time**. One is an accident — a customer who paid late, a parcel left with a neighbour. A pattern is a finding (BR-CPM-27, BR-STO-37). |
+| BR-DVM-12 | `[SEC]` Location is captured at acceptance, at handover and at discharge, and used **only** for custody evidence and route reporting. It is personal data about a member of staff: retained to a stated period, never used for anything else, and covered by the same redaction rules as any other PII (BR-DAT-06, BR-SEC-07). |
+| BR-DVM-13 | `[SEC]` Signing out of delivery mode with open custody is refused, or requires a transfer (BR-DVM-07). Custody does not lapse because someone closed the app. |
+| BR-DVM-14 | Custody events (`custody.accepted`, `custody.transferred`, `custody.discharged`, `custody.discrepancy`, `custody.overdue`, `round.reconciled`) are emitted per doc 06 §3 and audited (BR-ADM-06). |
+
+#### Transit damage — attribution, and why liability is a separate decision
+
+Goods that leave in good condition and arrive damaged were damaged in someone's custody, and that someone is the delivery person. **Attribution is automatic.** Whether it becomes a charge against them is not, and the distinction is deliberate.
+
+> **The risk to guard against: if reporting damage costs the delivery person money, they will stop reporting it.**
+>
+> The whole doorstep adjustment (§9A.3) depends on honest reporting. Under automatic liability, the rational move for a delivery person is to hand over the damaged item quietly and hope the customer does not notice — so the customer receives damaged goods with no adjustment, complains later, and the shop pays anyway *plus* loses the customer. A control that makes honesty expensive produces dishonesty, not care.
+
+| ID | Rule |
+|---|---|
+| BR-DVM-15 | `[MONEY]` **Condition is recorded at acceptance, not assumed.** For fragile, high-value or previously-problematic lines, dispatch captures the condition — a photograph where configured — so "it left in good condition" is an evidenced fact. Asserting a condition nobody recorded is not a basis for holding anyone responsible. |
+| BR-DVM-16 | `[MONEY]` Damage found at the door while goods are in custody is **attributed to that custody automatically**, recorded with the evidence, and reported. Attribution is a fact about where it happened, not a verdict about fault. |
+| BR-DVM-17 | `[SEC][MONEY]` **Charging a custodian for a loss is a separate, deliberate action** requiring manager approval, a reason, and an audit entry. It is never an automatic consequence of an attribution, and it is never applied by the system on its own. |
+| BR-DVM-18 | Attributed damage carries a **cause**, decided at review: `handling`, `packing`, `vehicle`, `product_fragility`, `supplier_condition`, `customer_refused_undamaged`, `undetermined`. Damage caused by poor packing or fragile goods is a packing or purchasing problem, and recording it as the delivery person's fault would hide the real cause (BR-DMG-13). |
+| BR-DVM-19 | `[MONEY]` A single incident is an incident. **A pattern is a finding**, and the reports are built to show patterns: damage rate per custodian against the shop average, per route, per product category, over time. One broken jar tells you nothing; one person breaking jars every week tells you a great deal. |
+| BR-DVM-20 | Reporting damage promptly and with evidence MUST NOT worsen a custodian's position compared with concealing it. Where a policy is applied, prompt disclosure counts in the custodian's favour — otherwise the system is paying people to hide problems. |
 
 ---
 
