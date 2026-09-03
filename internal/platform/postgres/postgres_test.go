@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/stephenindia1/steleios-ecom/internal/platform/config"
 	"github.com/stephenindia1/steleios-ecom/internal/platform/postgres"
 )
@@ -63,23 +64,44 @@ func newPool(t *testing.T) *postgres.Pool {
 
 // scratch creates a table for one test and drops it afterwards, so tests do not
 // depend on application schema or on each other.
-func scratch(t *testing.T, pool *postgres.Pool, name string) {
+//
+// DDL runs on an ADMIN connection, not the application pool. The application
+// role deliberately cannot create tables (least privilege, migration 00004),
+// which is correct — so test setup uses the privileged connection exactly as
+// migrations do, while the code under test runs as the application role.
+// Setting up a test with more privilege than the code has is normal; running
+// the code with more privilege than production is how isolation bugs hide.
+func scratch(t *testing.T, name string) {
 	t.Helper()
 	ctx := context.Background()
 
+	adminDSN := os.Getenv("POSTGRES_ADMIN_DSN")
+	if adminDSN == "" {
+		if os.Getenv("CI") != "" {
+			t.Fatal("POSTGRES_ADMIN_DSN is unset in CI: transaction tests need it for scratch DDL")
+		}
+		t.Skip("POSTGRES_ADMIN_DSN unset; skipping tests that need scratch tables")
+	}
+
+	admin, err := pgx.Connect(ctx, adminDSN)
+	if err != nil {
+		t.Fatalf("admin connect: %v", err)
+	}
+	t.Cleanup(func() { _ = admin.Close(context.Background()) }) //nolint:errcheck // test teardown
+
 	exec := func(sql string) {
 		t.Helper()
-		err := pool.Read(ctx, func(r postgres.Repos) error {
-			_, err := r.Querier().Exec(ctx, sql)
-			return err
-		})
-		if err != nil {
+		if _, err := admin.Exec(ctx, sql); err != nil {
 			t.Fatalf("scratch %s: %v", sql, err)
 		}
 	}
 
 	exec("drop table if exists " + name)
 	exec("create table " + name + " (id int primary key, note text)")
+	// The application role must be able to use it, the same way it can use any
+	// table a migration creates.
+	exec("grant select, insert, update, delete on " + name + " to steleios_app")
+
 	t.Cleanup(func() { exec("drop table if exists " + name) })
 }
 
@@ -87,7 +109,7 @@ func count(t *testing.T, pool *postgres.Pool, table string) int {
 	t.Helper()
 
 	var n int
-	err := pool.Read(context.Background(), func(r postgres.Repos) error {
+	err := pool.ReadSystem(context.Background(), func(r postgres.Repos) error {
 		return r.Querier().QueryRow(context.Background(), "select count(*) from "+table).Scan(&n)
 	})
 	if err != nil {
@@ -126,12 +148,12 @@ func TestConnectFailsFastOnABadDSN(t *testing.T) {
 
 func TestUnitOfWorkCommits(t *testing.T) {
 	pool := newPool(t)
-	scratch(t, pool, "uow_commit_test")
+	scratch(t, "uow_commit_test")
 
 	uow := postgres.NewUnitOfWork(pool)
 	ctx := context.Background()
 
-	err := uow.Do(ctx, func(r postgres.Repos) error {
+	err := uow.DoSystem(ctx, func(r postgres.Repos) error {
 		for i := range 3 {
 			if _, err := r.Querier().Exec(ctx,
 				"insert into uow_commit_test (id, note) values ($1, $2)", i, "kept"); err != nil {
@@ -151,7 +173,7 @@ func TestUnitOfWorkCommits(t *testing.T) {
 
 func TestUnitOfWorkRollsBackOnError(t *testing.T) {
 	pool := newPool(t)
-	scratch(t, pool, "uow_rollback_test")
+	scratch(t, "uow_rollback_test")
 
 	uow := postgres.NewUnitOfWork(pool)
 	ctx := context.Background()
@@ -160,7 +182,7 @@ func TestUnitOfWorkRollsBackOnError(t *testing.T) {
 	// The property that matters: work done before the failure must not survive.
 	// This is what BR-CHK-01 relies on — reprice, reserve stock and create the
 	// order, or none of it.
-	err := uow.Do(ctx, func(r postgres.Repos) error {
+	err := uow.DoSystem(ctx, func(r postgres.Repos) error {
 		if _, err := r.Querier().Exec(ctx,
 			"insert into uow_rollback_test (id, note) values (1, 'should vanish')"); err != nil {
 			return err
@@ -178,7 +200,7 @@ func TestUnitOfWorkRollsBackOnError(t *testing.T) {
 
 func TestUnitOfWorkRollsBackOnPanic(t *testing.T) {
 	pool := newPool(t)
-	scratch(t, pool, "uow_panic_test")
+	scratch(t, "uow_panic_test")
 
 	uow := postgres.NewUnitOfWork(pool)
 	ctx := context.Background()
@@ -190,7 +212,7 @@ func TestUnitOfWorkRollsBackOnPanic(t *testing.T) {
 			}
 		}()
 
-		_ = uow.Do(ctx, func(r postgres.Repos) error {
+		_ = uow.DoSystem(ctx, func(r postgres.Repos) error {
 			if _, err := r.Querier().Exec(ctx,
 				"insert into uow_panic_test (id, note) values (1, 'should vanish')"); err != nil {
 				return err
@@ -208,12 +230,12 @@ func TestUnitOfWorkRollsBackOnPanic(t *testing.T) {
 
 func TestUnitOfWorkRollsBackWhenTheContextIsCancelled(t *testing.T) {
 	pool := newPool(t)
-	scratch(t, pool, "uow_cancel_test")
+	scratch(t, "uow_cancel_test")
 
 	uow := postgres.NewUnitOfWork(pool)
 	ctx, cancel := context.WithCancel(context.Background())
 
-	err := uow.Do(ctx, func(r postgres.Repos) error {
+	err := uow.DoSystem(ctx, func(r postgres.Repos) error {
 		if _, err := r.Querier().Exec(ctx,
 			"insert into uow_cancel_test (id, note) values (1, 'should vanish')"); err != nil {
 			return err
@@ -235,14 +257,14 @@ func TestUnitOfWorkRollsBackWhenTheContextIsCancelled(t *testing.T) {
 
 func TestUnitOfWorkIsAtomicAcrossSeveralStatements(t *testing.T) {
 	pool := newPool(t)
-	scratch(t, pool, "uow_atomic_test")
+	scratch(t, "uow_atomic_test")
 
 	uow := postgres.NewUnitOfWork(pool)
 	ctx := context.Background()
 
 	// A constraint violation partway through must undo everything before it —
 	// the multi-repository atomicity checkout depends on (docs/03 §2.5).
-	err := uow.Do(ctx, func(r postgres.Repos) error {
+	err := uow.DoSystem(ctx, func(r postgres.Repos) error {
 		if _, err := r.Querier().Exec(ctx,
 			"insert into uow_atomic_test (id, note) values (1, 'first')"); err != nil {
 			return err
@@ -272,7 +294,7 @@ func TestStatementTimeoutIsApplied(t *testing.T) {
 	// DB-012: every statement is bounded. Without this, one pathological query
 	// holds a connection until someone notices.
 	start := time.Now() //nolint:forbidigo // measuring elapsed wall time is the point
-	err := pool.Read(ctx, func(r postgres.Repos) error {
+	err := pool.ReadSystem(ctx, func(r postgres.Repos) error {
 		_, err := r.Querier().Exec(ctx, "select pg_sleep(10)")
 		return err
 	})
@@ -294,7 +316,7 @@ func TestReadDoesNotOpenATransaction(t *testing.T) {
 	// If it silently opened one, idle-in-transaction timeouts and lock holding
 	// would apply to every read in the system.
 	var inTx bool
-	err := pool.Read(ctx, func(r postgres.Repos) error {
+	err := pool.ReadSystem(ctx, func(r postgres.Repos) error {
 		return r.Querier().QueryRow(ctx,
 			"select pg_current_xact_id_if_assigned() is not null").Scan(&inTx)
 	})

@@ -102,7 +102,12 @@ jobs:
 
     env:
       STELEIOS_ENV: test
-      POSTGRES_DSN: postgres://steleios:steleios_ci@localhost:5432/steleios_test?sslmode=disable
+      # Migrations and test DDL run privileged; the application does not.
+      POSTGRES_ADMIN_DSN: postgres://steleios:steleios_ci@localhost:5432/steleios_test?sslmode=disable
+      # The application connects as the least-privilege role, so row-level
+      # security actually applies and the isolation tests are meaningful. A
+      # superuser DSN here would make every tenancy test vacuous (ADR 0007).
+      POSTGRES_DSN: postgres://steleios_app:steleios_ci_app@localhost:5432/steleios_test?sslmode=disable
       REDIS_ADDR: localhost:6379
 
     steps:
@@ -113,7 +118,16 @@ jobs:
           cache: true
 
       - name: Apply migrations
+        env:
+          POSTGRES_DSN: ${{ env.POSTGRES_ADMIN_DSN }}
         run: go run ./cmd/migrate -command up
+
+      - name: Set the application role's password
+        env:
+          PGPASSWORD: steleios_ci
+        run: |
+          psql -h localhost -U steleios -d steleios_test \
+            -c "alter role steleios_app password 'steleios_ci_app'"
 
       # -race is why this job runs on Linux: a data race is a merge blocker,
       # never "flaky" (GO-055).

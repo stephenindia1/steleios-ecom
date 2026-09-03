@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stephenindia1/steleios-ecom/internal/platform/config"
+	"github.com/stephenindia1/steleios-ecom/internal/platform/tenant"
 )
 
 // Pool is the application's database handle.
@@ -68,6 +69,11 @@ func New(ctx context.Context, cfg config.Postgres, log *slog.Logger) (*Pool, err
 		return nil, fmt.Errorf("postgres: ping: %w", err)
 	}
 
+	if err := assertRLSApplies(pingCtx, pool); err != nil {
+		pool.Close()
+		return nil, err
+	}
+
 	log.Info("postgres connected",
 		"max_conns", cfg.MaxConns,
 		"min_conns", cfg.MinConns,
@@ -75,6 +81,40 @@ func New(ctx context.Context, cfg config.Postgres, log *slog.Logger) (*Pool, err
 	)
 
 	return &Pool{pool: pool, log: log, cfg: cfg}, nil
+}
+
+// assertRLSApplies refuses to start if the connected role bypasses row-level
+// security.
+//
+// This guard exists because the failure it prevents is silent and total.
+// PostgreSQL exempts superusers and BYPASSRLS roles from row-level security
+// entirely — not partially, and not with a warning. An instance configured with
+// a superuser DSN would have every tenant policy in place, every test written,
+// and no isolation whatsoever: one shop's queries would return every shop's
+// data, and nothing would look wrong until a customer noticed.
+//
+// It fails closed in every environment, including local. Local development that
+// silently has no isolation is worse than none at all, because it is where the
+// bug would have been caught (ADR 0007, BR-SEC-11).
+func assertRLSApplies(ctx context.Context, pool *pgxpool.Pool) error {
+	var bypasses bool
+	err := pool.QueryRow(ctx,
+		`select rolsuper or rolbypassrls from pg_roles where rolname = current_user`,
+	).Scan(&bypasses)
+	if err != nil {
+		return fmt.Errorf("postgres: check role privileges: %w", err)
+	}
+
+	if bypasses {
+		var role string
+		_ = pool.QueryRow(ctx, "select current_user").Scan(&role) //nolint:errcheck // best effort, for the message
+		return fmt.Errorf(
+			"postgres: refusing to start as role %q, which is a superuser or has BYPASSRLS: "+
+				"row-level security would not apply and tenant isolation would be silently absent. "+
+				"Connect as the application role (steleios_app), not the owner or a superuser",
+			role)
+	}
+	return nil
 }
 
 // Close releases the pool.
@@ -117,12 +157,33 @@ type Repos struct {
 // Querier exposes the transaction-bound handle to repository constructors.
 func (r Repos) Querier() Querier { return r.q }
 
+// setTenant scopes the current transaction to one shop.
+//
+// `set_config(..., true)` is TRANSACTION-LOCAL. That matters enormously with a
+// connection pool: a plain SET would persist on the connection and leak into
+// whichever request picked it up next — potentially a different shop. Every
+// tenant-scoped access therefore runs inside a transaction (ADR 0007).
+func setTenant(ctx context.Context, q Querier) error {
+	id, err := tenant.Require(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err := q.Exec(ctx, "select set_config('app.tenant_id', $1, true)", id.String()); err != nil {
+		return fmt.Errorf("postgres: scope to tenant: %w", err)
+	}
+	return nil
+}
+
 // UnitOfWork runs a function inside a single transaction.
 //
 // This is the only way to make several repositories atomic. Passing a pgx.Tx
 // between modules would leak the data layer everywhere (MOD-08).
+//
+// Do requires a tenant; DoSystem is the explicit, greppable escape hatch for
+// the few operations that legitimately have no shop.
 type UnitOfWork interface {
 	Do(ctx context.Context, fn func(Repos) error) error
+	DoSystem(ctx context.Context, fn func(Repos) error) error
 }
 
 // unitOfWork is the pgx-backed implementation.
@@ -136,12 +197,35 @@ func NewUnitOfWork(p *Pool) UnitOfWork {
 	return &unitOfWork{pool: p.pool, log: p.log}
 }
 
-// Do runs fn in a transaction, committing on success and rolling back on any
-// error or panic.
+// Do runs fn in a transaction scoped to the current shop.
+//
+// Every query inside is confined to that shop by row-level security. A missing
+// tenant is an error rather than an unscoped transaction, because unscoped
+// would silently see nothing and read as "no data" (ADR 0007).
+func (u *unitOfWork) Do(ctx context.Context, fn func(Repos) error) error {
+	return u.run(ctx, true, fn)
+}
+
+// DoSystem runs fn in a transaction with NO shop scope.
+//
+// Legitimate uses are few and each is deliberate: creating a client or shop
+// during onboarding, vendor billing, and background work that spans shops. It
+// is named rather than implicit so that `DoSystem` is greppable and every use
+// is visible in review (BR-LIC-61).
+//
+// Row-level security still applies — an unscoped transaction sees NO
+// tenant-scoped rows at all, because `tenant_id = NULL` is never true. This is
+// not a bypass; it is the absence of a scope.
+func (u *unitOfWork) DoSystem(ctx context.Context, fn func(Repos) error) error {
+	return u.run(ctx, false, fn)
+}
+
+// run is the shared transaction body.
 //
 // MOD-09: fn MUST NOT perform network I/O to a third party. A transaction that
-// waits on Razorpay holds locks for the duration of someone else's outage.
-func (u *unitOfWork) Do(ctx context.Context, fn func(Repos) error) (err error) {
+// waits on an external service holds locks for the duration of someone else's
+// outage.
+func (u *unitOfWork) run(ctx context.Context, scoped bool, fn func(Repos) error) (err error) {
 	tx, err := u.pool.BeginTx(ctx, pgx.TxOptions{
 		// Read-committed is sufficient because contended writes use atomic
 		// conditional updates and explicit row locks rather than relying on the
@@ -168,6 +252,12 @@ func (u *unitOfWork) Do(ctx context.Context, fn func(Repos) error) (err error) {
 		}
 	}()
 
+	if scoped {
+		if err = setTenant(ctx, tx); err != nil {
+			return err
+		}
+	}
+
 	if err = fn(Repos{q: tx}); err != nil {
 		return err
 	}
@@ -178,8 +268,40 @@ func (u *unitOfWork) Do(ctx context.Context, fn func(Repos) error) (err error) {
 	return nil
 }
 
-// Read runs fn outside a transaction, for single-statement reads that need no
-// atomicity. Using the pool directly avoids the cost of a transaction per read.
+// Read runs fn in a read-only transaction scoped to the current shop.
+//
+// It is a transaction rather than a bare pool call for one reason: the tenant
+// setting must be transaction-local, or it would persist on the pooled
+// connection and leak into the next request. A read-only transaction is cheap,
+// and the alternative — setting the scope non-locally and remembering to reset
+// it — is the kind of thing that works until the day it does not.
 func (p *Pool) Read(ctx context.Context, fn func(Repos) error) error {
-	return fn(Repos{q: p.pool})
+	return p.read(ctx, true, fn)
+}
+
+// ReadSystem runs fn in a read-only transaction with NO shop scope.
+//
+// Used by the paths that legitimately precede a shop: resolving an identity at
+// login, before the system knows which shop is being signed in to. Named so it
+// is greppable, and it grants nothing — row-level security still hides every
+// tenant-scoped row (ADR 0007).
+func (p *Pool) ReadSystem(ctx context.Context, fn func(Repos) error) error {
+	return p.read(ctx, false, fn)
+}
+
+func (p *Pool) read(ctx context.Context, scoped bool, fn func(Repos) error) error {
+	tx, err := p.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return fmt.Errorf("postgres: begin read: %w", err)
+	}
+	// A read-only transaction has nothing to commit, so rollback is the normal
+	// exit and its error is not interesting.
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }() //nolint:errcheck // read-only: nothing to lose
+
+	if scoped {
+		if err := setTenant(ctx, tx); err != nil {
+			return err
+		}
+	}
+	return fn(Repos{q: tx})
 }
