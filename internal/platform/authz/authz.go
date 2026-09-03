@@ -60,6 +60,28 @@ type Role string
 
 // The staff roles. Customers hold no roles; their access is by ownership.
 const (
+	// RoleOwner is the business owner: everything, including user and role
+	// management. It is the role that cannot be locked out.
+	RoleOwner Role = "owner"
+	// RoleAdmin is the platform administrator — the technical counterpart to
+	// owner, with the same grants.
+	RoleAdmin Role = "admin"
+	// RoleManager runs the store day to day: orders, stock, catalog, pricing,
+	// purchasing, marketing and reports. Deliberately NOT user management and
+	// NOT tax rates — a manager must not be able to grant themselves more, and
+	// a GST rate change is an owner-level, notification-backed act (BR-TAX-09).
+	RoleManager Role = "manager"
+	// RoleDataEntry is a data entry executive: they create and correct product
+	// records. Deliberately NOT pricing, NOT orders, and NOT customer data —
+	// the largest group of staff accounts should have the least reach into
+	// money and personal information.
+	RoleDataEntry Role = "data_entry"
+	// RoleCounterSales is a till operator: scan or key a code, pick a batch,
+	// take payment, award loyalty points (docs/02 §1B). Deliberately NOT
+	// refunds — a return at the till is routed to a manager, because a refund
+	// is the one counter action that moves money outward (BR-ADM-04).
+	RoleCounterSales Role = "counter_sales"
+
 	RoleViewer     Role = "viewer"
 	RoleSupport    Role = "support"
 	RoleOps        Role = "ops"
@@ -67,7 +89,6 @@ const (
 	RoleCatalog    Role = "catalog"
 	RoleMarketing  Role = "marketing"
 	RolePurchasing Role = "purchasing"
-	RoleAdmin      Role = "admin"
 )
 
 // Action is a permission, named `<resource>:<verb>`.
@@ -163,14 +184,50 @@ var grants = map[Role][]Action{
 		ActionCatalogRead, ActionInventoryRead, ActionInventoryWrite,
 		ActionPurchasingRead, ActionPurchasingWrite, ActionReportRead,
 	},
-	RoleAdmin: {
+	RoleAdmin: everything,
+	RoleOwner: everything,
+
+	// A manager runs the store but cannot grant permissions and cannot alter
+	// tax rates. Both exclusions are deliberate: the first prevents self-
+	// escalation, the second keeps a legally-consequential change at owner
+	// level with its notification reference and second approver (BR-TAX-09).
+	RoleManager: {
 		ActionOrderRead, ActionOrderWrite, ActionCatalogRead, ActionCatalogWrite,
 		ActionInventoryRead, ActionInventoryWrite, ActionRefundWrite,
-		ActionPricingWrite, ActionTaxWrite, ActionCustomerRead,
-		ActionPurchasingRead, ActionPurchasingWrite, ActionMarketingWrite,
-		ActionMarketingExport, ActionLoyaltyWrite, ActionReportRead,
-		ActionUserManage,
+		ActionPricingWrite, ActionCustomerRead, ActionPurchasingRead,
+		ActionPurchasingWrite, ActionMarketingWrite, ActionLoyaltyWrite,
+		ActionReportRead,
 	},
+
+	// A data entry executive maintains product records and nothing else. No
+	// pricing, no orders, no customer data, no exports. This is usually the
+	// largest group of accounts and often the least controlled hardware, so it
+	// gets the smallest reach into money and personal data.
+	RoleDataEntry: {
+		ActionCatalogRead, ActionCatalogWrite, ActionInventoryRead,
+		ActionPurchasingRead,
+	},
+
+	// A counter sales user sells: resolve a code, choose a batch, take payment,
+	// award or redeem loyalty points. They read stock but never adjust it, and
+	// they never refund — a return at the till goes to a manager.
+	RoleCounterSales: {
+		ActionCatalogRead, ActionInventoryRead,
+		ActionOrderRead, ActionOrderWrite,
+		ActionLoyaltyWrite,
+	},
+}
+
+// everything is the full grant, shared by owner and admin. It is derived rather
+// than typed twice, so a new action cannot be added to one and forgotten in the
+// other (DRY).
+var everything = []Action{
+	ActionOrderRead, ActionOrderWrite, ActionCatalogRead, ActionCatalogWrite,
+	ActionInventoryRead, ActionInventoryWrite, ActionRefundWrite,
+	ActionPricingWrite, ActionTaxWrite, ActionCustomerRead,
+	ActionPurchasingRead, ActionPurchasingWrite, ActionMarketingWrite,
+	ActionMarketingExport, ActionLoyaltyWrite, ActionReportRead,
+	ActionUserManage,
 }
 
 // ownedResourceTypes are resource types a customer may access by ownership

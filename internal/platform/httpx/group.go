@@ -145,7 +145,7 @@ func NewRouter(d Deps) (*Router, error) {
 
 // Group returns a route group mounted at prefix.
 func (rt *Router) Group(prefix string) *Group {
-	return &Group{rt: rt, r: rt.mux, prefix: prefix}
+	return &Group{rt: rt, prefix: prefix}
 }
 
 // Routes returns every registered route with its policy, sorted for stable
@@ -190,17 +190,19 @@ func (rt *Router) Handler() http.Handler { return rt.mux }
 
 // Group registers routes under a prefix. It is the only way to register a
 // route, and every verb requires a policy.
+//
+// A group is a path prefix, not a chi sub-router: every route is registered on
+// the one mux with its full pattern. That keeps the recorded pattern, the
+// matched pattern and the registered pattern identical, so the startup route
+// table cannot disagree with what is actually served (SEC-03).
 type Group struct {
 	rt     *Router
-	r      chi.Router
 	prefix string
 }
 
 // Mount creates a nested group under pattern.
 func (g *Group) Mount(pattern string, fn func(*Group)) {
-	g.r.Route(pattern, func(sub chi.Router) {
-		fn(&Group{rt: g.rt, r: sub, prefix: g.prefix + pattern})
-	})
+	fn(&Group{rt: g.rt, prefix: g.prefix + pattern})
 }
 
 // GET registers a read route.
@@ -250,7 +252,7 @@ func (g *Group) route(method, pattern string, p policy.Policy, h HandlerFunc) {
 	for i := len(chain) - 1; i >= 0; i-- {
 		handler = chain[i](handler)
 	}
-	g.r.Method(method, pattern, handler)
+	g.rt.mux.Method(method, full, handler)
 }
 
 // requirementsFor reports dependencies a policy needs that the router does not

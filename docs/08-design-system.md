@@ -37,33 +37,44 @@ Status: draft · 3 September 2026
 
 ### 2.1 The pastel family — decorative and categorical
 
-Six hues, each with a light surface, a soft border, and a dark ink that is legible on both the surface and the page background.
+Six hues, each with **four** roles. The four exist because a pastel alone cannot do every job: it is a surface, and it needs a dark ink for text and a mid-tone "strong" for any boundary that carries meaning.
 
-| Hue | Surface (light) | Border | Ink (text/icon) | Assigned to |
+| Role | Purpose | Contrast requirement |
+|---|---|---|
+| `surface` | The tinted fill of a card, chip or panel | Perceivably off-white (≥1.10 vs `--bg`); no WCAG requirement |
+| `border` | Decorative hairline on a tinted surface | **None.** See DS-023 |
+| `strong` | Focus ring, input boundary, selected state, chart mark | **3:1** vs `--bg` (WCAG 1.4.11) |
+| `ink` | Text and meaningful icons on the surface or the page | **4.5:1** (WCAG 1.4.3) |
+
+**Light theme** — every value below is verified, with its measured ratio.
+
+| Hue | `surface` | `border` | `strong` (vs bg) | `ink` (on surface / on bg) | Assigned to |
+|---|---|---|---|---|---|
+| Blush | `#F7DDE2` | `#EDC2CB` | `#BC6576` — 3.78:1 | `#8C3A4A` — 5.82 / 7.05 | Bakery, confectionery |
+| Apricot | `#FBE4CE` | `#F2CBA6` | `#B06A2E` — 4.02:1 | `#8A4A1C` — 5.55 / 6.46 | Fruit, preserves |
+| Butter | `#F7EBB4` | `#E9D88C` | `#8F7815` — 4.09:1 | `#6B5810` — 5.78 / 6.57 | Grains, oils, staples |
+| Mint | `#D8EFE0` | `#B0DCC1` | `#2F8A60` — 4.04:1 | `#1E6B47` — 5.34 / 6.12 | Fresh produce, dairy |
+| Sky | `#D7E8F7` | `#AFCFEB` | `#2E6F9E` — 5.12:1 | `#1B5680` — 6.24 / 7.39 | Beverages, frozen |
+| Lilac | `#E4DCF4` | `#C8BAE6` | `#6B57A8` — 5.60:1 | `#4B3A8C` — 6.94 / 8.71 | Household, personal care |
+
+**Dark theme** — hue identity is kept and the roles invert: the ink becomes the light tone, the surface a deep tinted neutral.
+
+| Hue | `surface` | `border` | `strong` (vs bg) | `ink` (on surface / on bg) |
 |---|---|---|---|---|
-| Blush | `#F7DDE2` | `#EDC2CB` | `#8C3A4A` | Bakery, confectionery |
-| Apricot | `#FBE4CE` | `#F2CBA6` | `#8A4A1C` | Fruit, preserves |
-| Butter | `#F9F0C6` | `#EFE09A` | `#6B5810` | Grains, oils, staples |
-| Mint | `#D8EFE0` | `#B0DCC1` | `#1E6B47` | Fresh produce, dairy |
-| Sky | `#D7E8F7` | `#AFCFEB` | `#1B5680` | Beverages, frozen |
-| Lilac | `#E4DCF4` | `#C8BAE6` | `#4B3A8C` | Household, personal care |
-
-Dark theme keeps hue identity and inverts the roles: the ink becomes the light tone, the surface becomes a deep tinted neutral.
-
-| Hue | Surface (dark) | Border | Ink (dark) |
-|---|---|---|---|
-| Blush | `#332226` | `#4E343A` | `#F0B9C4` |
-| Apricot | `#33261B` | `#4E3A28` | `#EFC091` |
-| Butter | `#302C19` | `#4A4327` | `#E3D189` |
-| Mint | `#1C2B23` | `#2C4436` | `#96D9B3` |
-| Sky | `#1B2733` | `#2A3E4F` | `#9CC8E8` |
-| Lilac | `#272238` | `#3C3454` | `#C3B2E8` |
+| Blush | `#332226` | `#4E343A` | `#D9899A` — 7.07:1 | `#F0B9C4` — 8.90 / 11.00 |
+| Apricot | `#33261B` | `#4E3A28` | `#D69A62` — 7.65:1 | `#EFC091` — 8.80 / 11.16 |
+| Butter | `#332F1B` | `#4A4327` | `#C4AD5E` — 8.39:1 | `#E3D189` — 9.17 / 12.15 |
+| Mint | `#1C2B23` | `#2C4436` | `#63B98D` — 7.83:1 | `#96D9B3` — 9.07 / 11.38 |
+| Sky | `#1B2733` | `#2A3E4F` | `#6FA3CC` — 6.88:1 | `#9CC8E8` — 8.55 / 10.47 |
+| Lilac | `#272238` | `#3C3454` | `#9B87C9` — 5.93:1 | `#C3B2E8` — 7.91 / 9.60 |
 
 | ID | Rule |
 |---|---|
 | DS-020 | Hue assignment to a category is **reference data**, versioned like any other configuration (BR-VER-01), not hard-coded in a component. |
 | DS-021 | A category's hue is stable. Changing it re-teaches every returning customer, so it needs the same deliberation as renaming the category. |
 | DS-022 | At most **two** decorative hues appear in one viewport region. Multi-colour is a system across the site, not confetti on a page. |
+| DS-023 | A decorative `border` is **not** held to 3:1. WCAG 1.4.11 applies to components whose *identification* depends on their boundary; a tinted card is identified by its fill and its content, and forcing a 3:1 hairline onto a pastel surface destroys the pastel character for no accessibility gain. Wherever a boundary genuinely carries meaning — focus, selection, an input's edge, a validation state — the `strong` tone is used instead. Using `border` for those is a defect. |
+| DS-024 | `Butter` at `#F7EBB4` is deliberately a shade deeper than the other surfaces. At the original `#F9F0C6` it measured 1.09:1 against `--bg` and read as an off-white rendering artefact rather than a colour. |
 
 ### 2.2 Semantic colour — meaning, never decoration
 

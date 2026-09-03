@@ -158,7 +158,13 @@ func (rt *Router) recoverer(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
-				if errors.Is(rec.(error), http.ErrAbortHandler) { //nolint:errcheck,forcetypeassert // re-panic below covers the non-error case
+				// A panic value is any, not necessarily an error — a bare
+				// panic("...") is a string. The type assertion must be checked,
+				// or the recovery middleware itself panics and the client gets
+				// a dropped connection instead of a 500.
+				if err, ok := rec.(error); ok && errors.Is(err, http.ErrAbortHandler) {
+					// The client hung up deliberately; net/http expects this to
+					// propagate.
 					panic(rec)
 				}
 				requestID, _ := r.Context().Value(ctxKeyRequestID).(string)
