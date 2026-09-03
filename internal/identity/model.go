@@ -104,6 +104,12 @@ type Authenticated struct {
 	Identity    Identity
 	Memberships []Membership
 
+	// PlatformRoles are the vendor-side roles this identity holds, if it is
+	// vendor staff. Never populated alongside Memberships: the two worlds are
+	// disjoint, and the schema now refuses to grant a role from one world in the
+	// other (BR-ADM-14, migration 00019).
+	PlatformRoles []authz.Role
+
 	// MustChangePassword mirrors the identity flag, surfaced so the caller does
 	// not have to know to look for it. While true the session may do exactly
 	// one thing (BR-REC-20).
@@ -113,6 +119,10 @@ type Authenticated struct {
 	// and has not chosen yet. An owner with two shops lands on a switcher.
 	NeedsShopSelection bool
 }
+
+// IsPlatform reports whether this sign-in is vendor staff rather than a shop
+// worker. A platform user has no shop to select and never acquires a tenant.
+func (a Authenticated) IsPlatform() bool { return len(a.PlatformRoles) > 0 }
 
 // ActorFor builds the authorization actor for a membership.
 //

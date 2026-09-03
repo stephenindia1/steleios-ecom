@@ -67,6 +67,13 @@ type loginResponse struct {
 	MustChangePassword bool          `json:"must_change_password"`
 	NeedsShopSelection bool          `json:"needs_shop_selection"`
 	Shops              []shopSummary `json:"shops"`
+
+	// Platform says this is vendor staff, whose shop list is empty because they
+	// have none — not because something went wrong. Without it the client cannot
+	// tell "you operate the SaaS" from "your access is broken", and the two need
+	// completely different screens.
+	Platform      bool     `json:"platform"`
+	PlatformRoles []string `json:"platform_roles,omitempty"`
 }
 
 type selectShopRequest struct {
@@ -132,10 +139,16 @@ func (h *Handler) Login(ctx context.Context, req *httpx.Request) (httpx.Response
 		})
 	}
 
+	platformRoles := make([]string, 0, len(result.PlatformRoles)) // DB-024
+	for _, r := range result.PlatformRoles {
+		platformRoles = append(platformRoles, string(r))
+	}
+
 	// A person with a valid password and no membership authenticates and can do
 	// nothing. That is correct — membership is what grants access — but it must
-	// be said plainly rather than presented as a broken empty screen.
-	if len(shops) == 0 {
+	// be said plainly rather than presented as a broken empty screen. Vendor
+	// staff are the legitimate case and are not warned about.
+	if len(shops) == 0 && !result.IsPlatform() {
 		h.log.WarnContext(ctx, "signed in with no active shop membership",
 			"identity_id", result.Identity.ID.String())
 	}
@@ -152,6 +165,8 @@ func (h *Handler) Login(ctx context.Context, req *httpx.Request) (httpx.Response
 		MustChangePassword: result.MustChangePassword,
 		NeedsShopSelection: result.NeedsShopSelection,
 		Shops:              shops,
+		Platform:           result.IsPlatform(),
+		PlatformRoles:      platformRoles,
 	}).WithCookies(sessionCookie, csrfCookie), nil
 }
 

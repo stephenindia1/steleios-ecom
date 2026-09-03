@@ -143,18 +143,27 @@ func (s *Service) Authenticate(ctx context.Context, email, password, ip, userAge
 	// only opportunity to upgrade a hash made under weaker parameters.
 	s.rehashIfNeeded(ctx, ident, password, now)
 
+	// Vendor staff have no shops at all, so an empty list means two very
+	// different things and the caller must be able to tell them apart: a shop
+	// worker with no membership is broken, a platform user with none is normal.
+	platformRoles, err := s.repo.PlatformRolesOf(ctx, ident.ID)
+	if err != nil {
+		return Authenticated{}, err
+	}
+
 	result := Authenticated{
 		Token:              token,
 		CSRFSecret:         sess.CSRFSecret,
 		Identity:           ident,
 		Memberships:        active,
+		PlatformRoles:      platformRoles,
 		MustChangePassword: ident.MustChangePassword,
 		NeedsShopSelection: len(active) > 1,
 	}
 
 	// A single shop is selected automatically: making a person choose from a
 	// list of one is friction with no security value.
-	if len(active) == 1 && !ident.MustChangePassword {
+	if len(active) == 1 && !ident.MustChangePassword && !result.IsPlatform() {
 		if err := s.sessions.SelectShop(ctx, token, active[0].TenantID); err != nil {
 			return Authenticated{}, err
 		}
@@ -312,6 +321,21 @@ func (s *Service) Resolve(ctx context.Context, token string) (authz.Actor, error
 	// check therefore fails, and the only reachable routes are the ones that
 	// need none — change password, and sign out.
 	if ident.MustChangePassword {
+		return actor, nil
+	}
+
+	// Vendor staff. Their roles do not come from a shop, because they hold no
+	// membership in one — the two worlds are disjoint and enforced as such by
+	// the schema (BR-ADM-14, migration 00019). Checked BEFORE the membership
+	// path rather than as a fallback: a fallback would mean a bug in the
+	// membership lookup silently promoted a shop worker's session down this
+	// branch, and the two must never be reachable from the same identity.
+	platformRoles, err := s.repo.PlatformRolesOf(ctx, ident.ID)
+	if err != nil {
+		return authz.Actor{}, fmt.Errorf("%w: %w", authz.ErrUnavailable, err)
+	}
+	if len(platformRoles) > 0 {
+		actor.Roles = platformRoles
 		return actor, nil
 	}
 

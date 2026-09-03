@@ -348,3 +348,129 @@ func TestTheDatabaseRoleCatalogueMatchesTheCode(t *testing.T) {
 		}
 	}
 }
+
+// TestTheSchemaRefusesToMixTheTwoWorlds is BR-ADM-14 as a database constraint.
+//
+// It used to be asserted only by a Go test over the grant table, which said
+// nothing about what the database would accept — and the schema in fact accepted
+// a saas_admin as staff of a client's shop, which is how the vendor's own
+// administrator ended up holding a membership inside a customer's business.
+//
+// Migration 00019 makes each assignment table carry a constant `world` matched
+// by a composite foreign key, so mixing them is a foreign key violation rather
+// than a review item. This test is what explains that constraint to whoever
+// later wonders why the column is there.
+func TestTheSchemaRefusesToMixTheTwoWorlds(t *testing.T) {
+	conn := adminConn(t)
+	ctx := context.Background()
+	s := seed(t, authz.RoleManager, "worlds")
+
+	var staffID uuid.UUID
+	if err := conn.QueryRow(ctx,
+		`select id from staff where identity_id = $1`, s.identityID).Scan(&staffID); err != nil {
+		t.Fatalf("find staff: %v", err)
+	}
+
+	// A shop worker granted a vendor role: the vendor's own powers handed to a
+	// customer's employee.
+	_, err := conn.Exec(ctx, `
+		insert into staff_role_assignments (staff_id, role_code, granted_by, tenant_id)
+		values ($1, 'saas_admin', $1, $2)`, staffID, s.tenantID.UUID())
+	if err == nil {
+		t.Error("the schema allowed a shop worker to be granted saas_admin (BR-ADM-14)")
+	}
+
+	// And the other direction: vendor staff granted a shop role would put the
+	// vendor inside a client's business.
+	var platformUserID uuid.UUID
+	err = conn.QueryRow(ctx, `
+		insert into platform_users (identity_id, status) values ($1, 'active')
+		on conflict (identity_id) do update set status = 'active'
+		returning id`, s.identityID).Scan(&platformUserID)
+	if err != nil {
+		t.Fatalf("create platform user: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := conn.Exec(context.Background(),
+			`delete from platform_users where id = $1`, platformUserID); err != nil {
+			t.Errorf("cleanup platform user: %v", err)
+		}
+	})
+
+	if _, err := conn.Exec(ctx, `
+		insert into platform_role_assignments (platform_user_id, role_code, granted_by)
+		values ($1, 'manager', $1)`, platformUserID); err == nil {
+		t.Error("the schema allowed vendor staff to be granted a shop role (BR-ADM-14)")
+	}
+}
+
+// TestPlatformRolesOfReadsVendorStaffOnly checks the lookup that puts a vendor
+// role on an actor, including that an ordinary shop worker gets nothing from it.
+func TestPlatformRolesOfReadsVendorStaffOnly(t *testing.T) {
+	pool := repoPool(t)
+	conn := adminConn(t)
+	ctx := context.Background()
+
+	shopWorker := seed(t, authz.RoleManager, "pronly")
+	repo := identity.NewRepository(pool, postgres.NewUnitOfWork(pool))
+
+	// A shop worker is not vendor staff, and the absence is not an error.
+	roles, err := repo.PlatformRolesOf(ctx, shopWorker.identityID)
+	if err != nil {
+		t.Fatalf("PlatformRolesOf(shop worker): %v", err)
+	}
+	if len(roles) != 0 {
+		t.Errorf("a shop worker holds platform roles %v", roles)
+	}
+
+	// Vendor staff: a bare identity with no shop at all.
+	var vendorIdentity, vendorUser uuid.UUID
+	email := "vendor-" + uuid.NewString()[:8] + "@test.example"
+	if err := conn.QueryRow(ctx, `
+		insert into identities (email, full_name, password_hash, status)
+		values ($1, 'Vendor Person', 'not-a-real-hash', 'active') returning id`,
+		email).Scan(&vendorIdentity); err != nil {
+		t.Fatalf("create vendor identity: %v", err)
+	}
+	if err := conn.QueryRow(ctx, `
+		insert into platform_users (identity_id, status) values ($1, 'active') returning id`,
+		vendorIdentity).Scan(&vendorUser); err != nil {
+		t.Fatalf("create platform user: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `
+		insert into platform_role_assignments (platform_user_id, role_code, granted_by)
+		values ($1, 'saas_admin', $1)`, vendorUser); err != nil {
+		t.Fatalf("grant saas_admin: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx := context.Background()
+		for _, sql := range []string{
+			`delete from platform_role_assignments where platform_user_id = $1`,
+			`delete from platform_users where id = $1`,
+		} {
+			if _, err := conn.Exec(ctx, sql, vendorUser); err != nil {
+				t.Errorf("cleanup %q: %v", sql, err)
+			}
+		}
+		if _, err := conn.Exec(ctx, `delete from identities where id = $1`, vendorIdentity); err != nil {
+			t.Errorf("cleanup identity: %v", err)
+		}
+	})
+
+	roles, err = repo.PlatformRolesOf(ctx, vendorIdentity)
+	if err != nil {
+		t.Fatalf("PlatformRolesOf(vendor): %v", err)
+	}
+	if len(roles) != 1 || roles[0] != authz.RoleSaaSAdmin {
+		t.Fatalf("vendor roles = %v, want [saas_admin]", roles)
+	}
+
+	// Vendor staff hold no membership, so the shop switcher shows them nothing.
+	shops, err := repo.MembershipsOf(ctx, vendorIdentity)
+	if err != nil {
+		t.Fatalf("MembershipsOf(vendor): %v", err)
+	}
+	if len(shops) != 0 {
+		t.Errorf("vendor staff hold %d shop memberships", len(shops))
+	}
+}

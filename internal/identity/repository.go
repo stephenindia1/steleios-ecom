@@ -22,6 +22,12 @@ type Repository interface {
 	MembershipsOf(ctx context.Context, id uuid.UUID) ([]Membership, error)
 	MembershipIn(ctx context.Context, id uuid.UUID, t tenant.ID) (Membership, error)
 
+	// PlatformRolesOf returns the vendor-side roles of an identity, or nothing
+	// if it is not vendor staff. Separate from MembershipsOf because the two
+	// worlds are disjoint (BR-ADM-14) and a single call returning both would be
+	// the first step towards merging them.
+	PlatformRolesOf(ctx context.Context, id uuid.UUID) ([]authz.Role, error)
+
 	RecordFailedLogin(ctx context.Context, id uuid.UUID, lockUntil *time.Time) error
 	RecordSuccessfulLogin(ctx context.Context, id uuid.UUID, at time.Time) error
 	UpdatePassword(ctx context.Context, id uuid.UUID, hash string, at time.Time) error
@@ -154,6 +160,42 @@ func (r *pgRepository) MembershipIn(ctx context.Context, id uuid.UUID, t tenant.
 		}
 	}
 	return Membership{}, ErrNotAMember
+}
+
+const platformRolesSQL = `
+select coalesce(array_agg(a.role_code) filter (where a.role_code is not null), '{}')
+  from platform_users p
+  left join platform_role_assignments a on a.platform_user_id = p.id
+ where p.identity_id = $1 and p.status = 'active'
+ group by p.id`
+
+// PlatformRolesOf returns the vendor-side roles of an identity.
+//
+// On the system path, and legitimately so: a platform user has no tenant at all,
+// which is the whole point of migration 00019. platform_users carries no
+// row-level security for the same reason, so unlike the membership lookup this
+// needs no bypass — there is nothing to bypass.
+//
+// An identity that is not vendor staff returns no rows, which is not an error:
+// almost every identity in the system is a shop worker.
+func (r *pgRepository) PlatformRolesOf(ctx context.Context, id uuid.UUID) ([]authz.Role, error) {
+	var codes []string
+
+	err := r.pool.ReadSystem(ctx, func(rep postgres.Repos) error {
+		return rep.Querier().QueryRow(ctx, platformRolesSQL, id).Scan(&codes)
+	})
+	if err != nil {
+		if errors.Is(err, postgres.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("identity: platform roles: %w", err)
+	}
+
+	roles := make([]authz.Role, 0, len(codes)) // DB-024
+	for _, c := range codes {
+		roles = append(roles, authz.Role(c))
+	}
+	return roles, nil
 }
 
 // RecordFailedLogin increments the counter and applies a lockout.

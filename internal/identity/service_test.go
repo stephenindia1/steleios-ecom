@@ -33,9 +33,10 @@ const (
 // ---------------------------------------------------------------------------
 
 type fakeRepo struct {
-	byEmail map[string]identity.Identity
-	byID    map[uuid.UUID]identity.Identity
-	members map[uuid.UUID][]identity.Membership
+	byEmail   map[string]identity.Identity
+	byID      map[uuid.UUID]identity.Identity
+	members   map[uuid.UUID][]identity.Membership
+	platforms map[uuid.UUID][]authz.Role
 
 	failErr error
 
@@ -47,9 +48,10 @@ type fakeRepo struct {
 
 func newRepo() *fakeRepo {
 	return &fakeRepo{
-		byEmail: map[string]identity.Identity{},
-		byID:    map[uuid.UUID]identity.Identity{},
-		members: map[uuid.UUID][]identity.Membership{},
+		byEmail:   map[string]identity.Identity{},
+		byID:      map[uuid.UUID]identity.Identity{},
+		members:   map[uuid.UUID][]identity.Membership{},
+		platforms: map[uuid.UUID][]authz.Role{},
 	}
 }
 
@@ -92,6 +94,13 @@ func (f *fakeRepo) MembershipIn(_ context.Context, id uuid.UUID, t tenant.ID) (i
 		}
 	}
 	return identity.Membership{}, identity.ErrNotAMember
+}
+
+func (f *fakeRepo) PlatformRolesOf(_ context.Context, id uuid.UUID) ([]authz.Role, error) {
+	if f.failErr != nil {
+		return nil, f.failErr
+	}
+	return f.platforms[id], nil
 }
 
 func (f *fakeRepo) RecordFailedLogin(_ context.Context, id uuid.UUID, lockUntil *time.Time) error {
@@ -827,4 +836,124 @@ func mustHash(t *testing.T, h *passwd.Hasher, password string) string {
 		t.Fatalf("hash: %v", err)
 	}
 	return hash
+}
+
+// ---------------------------------------------------------------------------
+// Vendor staff
+// ---------------------------------------------------------------------------
+
+// platformUser is vendor staff: an identity with platform roles and no shop.
+func platformUser(t *testing.T, f fixture, email, password string, roles ...authz.Role) identity.Identity {
+	t.Helper()
+
+	i := f.user(t, email, password) // no shops, deliberately
+	f.repo.platforms[i.ID] = roles
+	return i
+}
+
+func TestVendorStaffSignInWithNoShops(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	platformUser(t, f, "vendor@steleios.test", "correct horse battery", authz.RoleSaaSAdmin)
+
+	got, err := f.svc.Authenticate(t.Context(), "vendor@steleios.test", "correct horse battery", "", "")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+
+	if !got.IsPlatform() {
+		t.Error("vendor staff did not report as platform")
+	}
+	if len(got.Memberships) != 0 {
+		t.Errorf("vendor staff hold %d shop memberships; they must hold none (BR-ADM-14)", len(got.Memberships))
+	}
+	if got.NeedsShopSelection {
+		t.Error("vendor staff were asked to choose a shop")
+	}
+}
+
+// TestVendorStaffNeverAcquireATenant is the one that matters.
+//
+// A session with a tenant is a session scoped to a client's business. Vendor
+// staff must never hold one — not because a permission would stop them reading
+// anything (BR-ADM-14 already ensures they hold no shop action), but because
+// row-level security would happily serve that shop's rows to any query that got
+// past the permission check. Defence in depth: the tenant is the second lock.
+func TestVendorStaffNeverAcquireATenant(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	platformUser(t, f, "vendor@steleios.test", "correct horse battery", authz.RoleSaaSAdmin)
+
+	got, err := f.svc.Authenticate(t.Context(), "vendor@steleios.test", "correct horse battery", "", "")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+
+	sess, err := f.sess.Resolve(t.Context(), got.Token)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if sess.HasTenant() {
+		t.Fatalf("a vendor session is scoped to tenant %s", sess.TenantID)
+	}
+}
+
+func TestResolveCarriesPlatformRoles(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	platformUser(t, f, "vendor@steleios.test", "correct horse battery", authz.RoleSaaSAdmin)
+
+	got, err := f.svc.Authenticate(t.Context(), "vendor@steleios.test", "correct horse battery", "", "")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+
+	actor, err := f.svc.Resolve(t.Context(), got.Token)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(actor.Roles) != 1 || actor.Roles[0] != authz.RoleSaaSAdmin {
+		t.Fatalf("actor roles = %v, want [saas_admin]", actor.Roles)
+	}
+
+	// Real authorization checks, not a role comparison: the point is what the
+	// actor can actually DO (SEC-10).
+	rbac := authz.NewRBAC()
+	if err := rbac.Can(t.Context(), actor, authz.ActionClientManage, authz.Resource{Type: "*"}); err != nil {
+		t.Errorf("saas_admin cannot manage clients: %v", err)
+	}
+	// And the half that must never be true.
+	for _, forbidden := range authz.ShopActions() {
+		if err := rbac.Can(t.Context(), actor, forbidden, authz.Resource{Type: "*"}); err == nil {
+			t.Errorf("saas_admin holds shop action %q, which BR-ADM-14 forbids", forbidden)
+		}
+	}
+}
+
+// TestALockedVendorAccountCarriesNoRolesEither confirms the recovery lock is
+// checked before the platform branch, not only before the membership one.
+func TestALockedVendorAccountCarriesNoRolesEither(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	i := platformUser(t, f, "vendor@steleios.test", "issued by the vendor", authz.RoleSaaSAdmin)
+	i.MustChangePassword = true
+	f.repo.byID[i.ID] = i
+	f.repo.byEmail[i.Email] = i
+
+	got, err := f.svc.Authenticate(t.Context(), "vendor@steleios.test", "issued by the vendor", "", "")
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+
+	actor, err := f.svc.Resolve(t.Context(), got.Token)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(actor.Roles) != 0 {
+		t.Fatalf("a locked vendor account carries roles %v (BR-REC-20)", actor.Roles)
+	}
 }
