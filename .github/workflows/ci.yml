@@ -1,0 +1,144 @@
+# Steleios CI.
+#
+# Gates run cheapest first and block merge on failure. No bypassing
+# (CLAUDE.md rule 46). Each job states which rules it enforces.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.27.1"
+
+jobs:
+  # Gate 1 — formatting and lint. Seconds, so it fails first.
+  lint:
+    name: Gate 1 · lint and format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: gofmt (GO-001)
+        run: |
+          unformatted=$(gofmt -l ./cmd ./internal ./migrations)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-formatted:"
+            echo "$unformatted"
+            gofmt -d ./cmd ./internal ./migrations
+            exit 1
+          fi
+
+      # Enforces the import boundaries and forbidden calls in .golangci.yml:
+      # chi only in httpx, pgx out of services, go-redis only in platform/redis,
+      # crypto/hmac only in payment, no time.Now, no math/rand, no fmt.Print.
+      - name: golangci-lint (GO-003, DRY-02)
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m
+
+  # Gate 2 — type checking and vet.
+  vet:
+    name: Gate 2 · vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go mod tidy is clean (GO-101)
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+  # Gate 3 — the full suite with the race detector. Real PostgreSQL and Redis,
+  # because mocking the database in a repository test proves nothing (GO-093).
+  test:
+    name: Gate 3 · tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: steleios
+          POSTGRES_PASSWORD: steleios_ci
+          POSTGRES_DB: steleios_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U steleios"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      STELEIOS_ENV: test
+      POSTGRES_DSN: postgres://steleios:steleios_ci@localhost:5432/steleios_test?sslmode=disable
+      REDIS_ADDR: localhost:6379
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Apply migrations
+        run: go run ./cmd/migrate -command up
+
+      # -race is why this job runs on Linux: a data race is a merge blocker,
+      # never "flaky" (GO-055).
+      - name: go test -race
+        run: go test -race -count=1 ./...
+
+  # Gate 4 — vulnerability and secret scanning. Findings block merge; they are
+  # fixed or triaged with a recorded decision, never silently ignored (GO-103).
+  security:
+    name: Gate 4 · security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # gitleaks needs history to scan the whole diff
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+      - name: gitleaks (secret scanning)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

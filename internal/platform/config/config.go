@@ -16,6 +16,18 @@ import (
 	"time"
 )
 
+// buildVersion and buildRevision are stamped at link time by the Makefile, so a
+// running process can be tied back to a commit without anyone remembering to
+// set an environment variable (BR-VER-08, HLT-004). The environment overrides
+// them where a deployment system supplies its own.
+//
+// These are the only package-level mutable variables in the codebase, and they
+// are written once by the linker rather than by any code (OOP-03).
+var (
+	buildVersion  = "dev"
+	buildRevision = "unknown"
+)
+
 // Environment names a deployment. It selects payment provider keys and nothing
 // else may (BR-PAY-15).
 type Environment string
@@ -121,8 +133,8 @@ func Load() (Config, error) {
 
 	cfg := Config{
 		Env:      Environment(get("STELEIOS_ENV", string(EnvLocal))),
-		Version:  get("STELEIOS_VERSION", "dev"),
-		Revision: get("STELEIOS_REVISION", "unknown"),
+		Version:  get("STELEIOS_VERSION", buildVersion),
+		Revision: get("STELEIOS_REVISION", buildRevision),
 
 		HTTP: HTTP{
 			Addr:            get("HTTP_ADDR", ":8080"),

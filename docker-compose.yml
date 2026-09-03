@@ -1,0 +1,84 @@
+# Local development infrastructure.
+#
+# This file is for local work only. It is not a deployment artefact: production
+# runs managed PostgreSQL and Redis with TLS, which config.Validate requires
+# (REDIS_TLS and COOKIE_SECURE must be true in production).
+
+name: steleios
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: steleios-postgres
+    environment:
+      POSTGRES_USER: steleios
+      POSTGRES_PASSWORD: steleios_local_only
+      POSTGRES_DB: steleios_ecomm
+      # Deterministic collation, so ordering and text comparison behave the
+      # same here as in production.
+      LANG: C.UTF-8
+    command:
+      - postgres
+      # pg_stat_statements is how the weekly top-20 by total time is reviewed
+      # (PRF-003). Enabling it locally means slow queries are visible while
+      # they are being written, not after they ship.
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.track=all
+      # Anything slower than the request-path budget is logged (PRF-003).
+      - -c
+      - log_min_duration_statement=200
+    ports:
+      - "5433:5432"   # 5433 so it cannot collide with a local PostgreSQL install
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U steleios -d steleios_ecomm"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: steleios-redis
+    command:
+      - redis-server
+      # Redis holds sessions, carts, the queue, rate limits and idempotency.
+      # Losing it must degrade the system, never corrupt it (RD-010) — but
+      # appendonly keeps a local restart from wiping a work-in-progress cart.
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - 256mb
+      # noeviction rather than an LRU policy: silently evicting an idempotency
+      # key or a rate-limit counter would turn a memory limit into a security
+      # failure. Better to fail loudly (RD-011).
+      - --maxmemory-policy
+      - noeviction
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Queue inspector. Read-only convenience for local work; never deployed.
+  asynqmon:
+    image: hibiken/asynqmon:latest
+    container_name: steleios-asynqmon
+    environment:
+      REDIS_ADDR: redis:6379
+    ports:
+      - "8081:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+    profiles: ["tools"]
+
+volumes:
+  postgres-data:
+  redis-data:
