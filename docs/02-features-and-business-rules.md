@@ -1491,11 +1491,46 @@ draft ─> pending_payment ─> paid ─────> packed ─> shipped ─> d
 | BR-RET-02 | A return may be requested only for `delivered` orders within the window, for quantities not already returned. |
 | BR-RET-03 | `[MONEY]` A refund amount is computed from the order line snapshots, including the proportional share of any discount, and its GST. Shipping is refunded only for a full-order return or a Steleios-caused fault. |
 | BR-RET-04 | `[MONEY]` Cumulative refunds against an order can never exceed the amount captured. |
-| BR-RET-05 | Refunds are issued to the original payment method via Razorpay. Refunds to an alternative destination are prohibited except for COD orders. |
+| BR-RET-05 | `[MONEY]` **The client pays the refund; Steleios records it** (§12.2). The money goes out through the shop's own UPI or bank, exactly as it came in (ADR 0008). |
 | BR-RET-06 | `[SEC]` COD refunds require bank details verified against the account holder name, an admin approval by a second actor, and a full audit trail. |
 | BR-RET-07 | Stock is restored on physical receipt and inspection, not at return approval. Damaged returns restore to a `quarantine` location, not to sellable stock. |
 | BR-RET-08 | `[LEGAL]` A credit note is issued for every refund, referencing the original invoice number. |
-| BR-RET-09 | Refund state is driven by Razorpay's `refund.processed` webhook, not by the refund API call's response. |
+| BR-RET-09 | `[MONEY]` A refund is `refund_unverified` until the outgoing debit is matched in the shop's statement (§12.2). Recording a refund is a claim that it was sent, not proof that it was. |
+
+### 12.2 Recording a refund — the client pays it, the system records it
+
+Refunds mirror payments exactly: **the shop sends the money through its own UPI or bank, and Steleios records the transaction reference and the details.** The system is not in the refund path any more than it is in the payment path (ADR 0008).
+
+| ID | Rule |
+|---|---|
+| BR-RFD-01 | `[MONEY]` A **credit note establishes what is owed** (BR-DOC-30). Paying it is a separate, later act, and the two are never conflated: a credit note is not a refund. |
+| BR-RFD-02 | `[MONEY]` The client refunds through their own channel and then **records it**: amount, date, method (UPI, bank transfer, cash at counter), **transaction reference**, the destination, and who recorded it. |
+| BR-RFD-03 | `[MONEY]` The transaction reference is mandatory and format-validated, and is **unique across all payments and refunds** (BR-CPM-06). One reference cannot settle two refunds. |
+| BR-RFD-04 | `[MONEY]` A refund is `refund_unverified` until reconciliation matches the **outgoing debit** in the shop's statement (BR-CPM-20). Recording it is a claim; the statement is the proof. |
+| BR-RFD-05 | `[MONEY]` Cumulative refunds against an invoice can never exceed its credit notes, which can never exceed the invoice (BR-RET-04, BR-DOC-34). |
+| BR-RFD-06 | `[SEC]` Recording a refund requires `refund:write`, and above a configured value a second approver (BR-ADM-04). `counter_sales` and `delivery` hold neither — a refund is the one counter action that moves money outward. |
+| BR-RFD-07 | `[SEC]` Refund destination details are entered at the point of refund and **never** taken from a customer-supplied field on an order. A per-order payee field would be a way to redirect refunds one order at a time (BR-STO-20 reasoning). |
+
+#### The two failure modes, and the control for each
+
+| ID | Rule |
+|---|---|
+| BR-RFD-10 | `[MONEY]` **A refund recorded but never sent** — closing a complaint on paper. Caught by reconciliation: no matching debit in the statement. Unmatched past the configured window is an exception naming the recorder (BR-CPM-21). |
+| BR-RFD-11 | `[MONEY]` **A refund owed but never issued** — the credit note sits unpaid. This is the one that damages customers, so outstanding credit notes with no recorded refund are a **payable**, aged and reported daily like any other (BR-DOC-42). A shop that issues credit notes and never pays them will see the number grow. |
+| BR-RFD-12 | `[MONEY]` A statement debit with no matching recorded refund is equally an exception: money left the account that no document accounts for (BR-CPM-22). |
+| BR-RFD-13 | Refund ageing — how long between credit note and money sent — is reported. It is the customer-experience number the shop should be judged on, and nobody measures it unless the system does. |
+| BR-RFD-14 | Refund events (`refund.recorded`, `refund.verified`, `refund.unmatched`, `credit_note.unpaid_aged`) are emitted per doc 06 §3, and every recording and approval is audited (BR-ADM-06). |
+
+#### Why the reference is captured at all
+
+The transaction reference is not bureaucracy. It is the **join** between the shop's books and its bank statement, and it exists so that **the client's accountant can reconcile the two without asking anybody anything.**
+
+| ID | Rule |
+|---|---|
+| BR-RFD-20 | `[LEGAL]` Every money movement recorded — payment in, refund out — carries the reference that identifies it in the shop's own bank or UPI statement. Without it, reconciliation is a manual matching exercise on amounts and dates, which fails the moment two customers pay the same amount on the same day. |
+| BR-RFD-21 | `[LEGAL]` The **export gives the CA both sides**: the document (invoice or credit note) and the money movement against it, with the reference. That is what makes an export reconcilable against a bank statement rather than merely readable (BR-DOC-60, BR-RSP-22). |
+| BR-RFD-22 | `[LEGAL]` Every figure traces to its documents and every document to its money movement, so a CA can follow any number end to end without a conversation (BR-DOC-53). An accountant who cannot verify a number will re-key it into a spreadsheet, and then the system is not the record any more. |
+| BR-RFD-23 | Unreconciled items — recorded but unmatched, in either direction — are **exported as such rather than hidden**. A CA needs to see what is outstanding, not a tidy file that implies everything cleared. Presenting unmatched items as settled would be the one genuinely misleading thing an export could do. |
 
 ---
 
