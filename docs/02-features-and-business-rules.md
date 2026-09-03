@@ -1366,7 +1366,9 @@ This is what makes acceptance defensible. Refusing a later visible-damage claim 
 | BR-POD-02 | `[SEC]` The photograph is **captured in-app from the camera**. Choosing an existing image from the gallery is prohibited, or an old photo can be re-used to evidence a delivery that never happened. |
 | BR-POD-03 | `[SEC]` Capture time and location are bound to the image at capture and stored with it, not taken from the upload (BR-DVM-12). |
 | BR-POD-04 | `[LEGAL]` The photograph is **of the goods only — never of a person.** The frame shows the delivered items and enough context to identify them; it does not show the customer, the delivery person, or anyone else. This is a hard rule, not a preference (BR-POD-22). |
-| BR-POD-05 | The capture screen states "photograph the items, not the customer" at the moment of capture, and the guidance is repeated in delivery training. A rule nobody is reminded of at the point of action is a rule that erodes. |
+| BR-POD-04a | `[LEGAL]` The goods are **placed down and photographed** — on the doorstep, a surface, or in the customer's own container. They are **not held up in front of anyone**, by the delivery person or the customer. Composing the shot around a person is how a face ends up in frame, and holding items to the camera also makes worse condition evidence: the items sit closer to the lens, at an angle, partly obscured by whoever is holding them. |
+| BR-POD-04b | `[LEGAL]` No person is posed with, behind, or holding the items. An incidental hand steadying a box is not a breach; a torso or a face in frame is (BR-POD-22). |
+| BR-POD-05 | The capture screen states, at the moment of capture: **"Place the items down. Photograph the goods only — no people."** The guidance is repeated in delivery training. A rule nobody is reminded of at the point of action is a rule that erodes. |
 | BR-POD-06 | `[LEGAL]` A photograph found to contain a person is deleted on discovery and re-taken where the delivery is still open. Reported occurrences are a training finding, not a disciplinary one — the aim is fewer such photographs, not fewer reports of them. |
 
 #### Capture blocks; upload does not
