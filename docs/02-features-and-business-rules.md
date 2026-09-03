@@ -855,13 +855,74 @@ The two pull in opposite directions under uncertainty: retrying protects against
 | BR-RCV-33 | The server drains in-flight requests on shutdown within the grace period, so a deploy during a customer's checkout completes their request rather than resetting it. |
 | BR-RCV-34 | Webhook delivery is retried by the provider on any non-2xx, and the handler is idempotent, so a webhook arriving during a restart is simply redelivered (BR-PAY-07, BR-PAY-08). |
 
-### 8A.5 The counter, offline
+### 8A.5 Offline counter sales
+
+**A sale never stops because connectivity dropped.** See [ADR 0003](decisions/0003-offline-counter-sales.md).
+
+The till does not sell from a guess. It sells from a **lease**: specific batches, in specific quantities, at specific prices, reserved to that till in advance by the server. Leased units are already `reserved` in the shared pool, so nobody else can sell them — which is what turns offline selling from an overselling risk into a bounded availability limit.
+
+> **The lease is the sole source of offline sellable stock, in every mode.** Any change that lets a till sell outside its lease reintroduces every failure ADR 0002 documented.
+
+#### Connectivity modes — configured per shop
 
 | ID | Rule |
 |---|---|
-| BR-RCV-40 | `[MONEY]` A counter till that cannot reach the server **refuses to complete a sale** rather than queuing it. Batch allocation, effective price and stock availability are server decisions (BR-SCN-20, BR-BAT-31); a till deciding them alone would oversell stock and could charge the wrong price for a marked-down batch. |
-| BR-RCV-41 | The till states plainly that it is offline, and retries in the background. A partially entered sale is preserved locally so the operator does not re-scan a full basket when the connection returns. |
-| BR-RCV-42 | **Open decision.** True offline-capable POS — queue-and-forward with local stock reservation — is out of scope for launch and MUST NOT be added without deciding how overselling and marked-down pricing are handled offline. Recorded in `docs/decisions/`. |
+| BR-OFF-01 | A shop configures its connectivity mode. All three use the same lease mechanism; they differ only in lease size, expiry and how sync is triggered. |
+| BR-OFF-02 | `[MONEY]` The mode changes **availability and limits, never correctness**. No mode permits selling outside the lease, charging an unleased price, or guessing a batch. |
+| BR-OFF-03 | `[SEC][MONEY]` **`online_only` is the default.** Offline selling is opt-in: it is never enabled by a default, an upgrade, or a support action. Enabling it requires the `owner` role, records who enabled it and why, and is audited (BR-ADM-06). It hands a device real stock authority and accepts a bounded price-staleness and recall window, so it is a decision an owner takes deliberately rather than one they inherit. |
+| BR-OFF-04 | Turning an offline mode **off** revokes outstanding leases and requires every till to sync before the change completes, so unsynced sales cannot be stranded by a configuration change (BR-OFF-33). |
+
+| Mode | Behaviour | For |
+|---|---|---|
+| `online_only` *(default)* | The till refuses to complete a sale while offline. No lease is granted. | Every shop, unless the owner deliberately chooses otherwise |
+| `offline_capable` | Sells from its lease when offline, syncs **opportunistically the moment** connectivity returns. | Shops that are online normally but need resilience to drops |
+| `offline_first` | Deliberately runs disconnected and syncs on a **schedule** (configurable interval, default hourly). | Poor or metered connectivity, or a deliberate low-bandwidth operation |
+
+#### The lease
+
+| ID | Rule |
+|---|---|
+| BR-OFF-10 | `[MONEY]` A lease grants `(batch, quantity, effective price, price_valid_until)` entries to a named till, and **reserves those quantities in the shared pool** through the normal atomic path (BR-BAT-11). Leased stock is invisible to the storefront and to other tills. |
+| BR-OFF-11 | `[MONEY]` A lease is granted per batch, so an offline receipt records the real batch number and expiry. Traceability, recall and allergen provenance survive the outage (BR-BAT-16, BR-BAT-25, BR-ATR-24). |
+| BR-OFF-12 | `[MONEY]` The price charged offline is the leased price. It is stale by at most the lease expiry, which is a **known, bounded** window rather than an open-ended one. A markdown applied during an outage reaches the till at the next lease refresh. |
+| BR-OFF-13 | Leases are refreshed continuously while online, so a till that loses connectivity is already carrying a current lease rather than scrambling for one. |
+| BR-OFF-14 | `[MONEY]` A lease expires (default 12 hours). Unsold leased quantity is released back to the pool by the sweeper when the lease expires or the till syncs — the same release path as an abandoned checkout reservation (BR-INV-06). |
+| BR-OFF-15 | `[SEC]` A lease is **revocable server-side**. A lost or stolen till holds real stock authority, so revocation is part of the design: revoking a lease releases its stock and invalidates the till's credentials. |
+| BR-OFF-16 | Leases are sized per shop by value and by units, capping the money and stock at risk in any one device. |
+| BR-OFF-17 | Every grant, refresh, expiry, revocation and reclaim is audited and emits an event (`lease.granted`, `lease.refreshed`, `lease.expired`, `lease.revoked`, `lease.reclaimed`). |
+
+#### Selling offline
+
+| ID | Rule |
+|---|---|
+| BR-OFF-20 | `[MONEY]` A till sells offline **only within its lease**. Beyond it, the sale is refused with the reason stated — a refusal, never an oversell. |
+| BR-OFF-21 | `[MONEY]` Offline payment is **cash**, or a card taken on a standalone terminal and recorded with its reference. Razorpay cannot authorise offline; a till MUST NOT claim a card or UPI payment succeeded without an approval it cannot have obtained. |
+| BR-OFF-22 | `[LEGAL]` Each till has its **own invoice series** with a pre-allocated block, replenished with the lease. GST requires consecutive numbering within a series, not one global sequence, so per-till series stay compliant without a round trip (BR-ORD-10). |
+| BR-OFF-23 | Each offline sale carries a till-generated UUIDv7 identifier, recorded with `sold_offline_at`. That identifier is the idempotency key for sync (BR-OFF-30). |
+| BR-OFF-24 | `[SEC]` Local till storage is encrypted at rest and holds no card data and no customer PII beyond what the receipt requires (BR-DAT-06, BR-PAY-11). |
+| BR-OFF-25 | The till shows its offline state, its remaining lease per line, and the time since last sync. An operator must never be surprised by a refusal. |
+| BR-OFF-26 | `[MONEY]` A batch recalled during an outage may still be sold — the till cannot know. Such sales are **flagged on sync for customer contact**. This exposure is the main reason lease expiry is short (BR-BAT-25). |
+
+#### Sync
+
+| ID | Rule |
+|---|---|
+| BR-OFF-30 | `[MONEY]` Sync uploads offline sales keyed by their till-generated identifier, applied `ON CONFLICT DO NOTHING`. Re-uploading is a no-op, so an interrupted sync is simply retried — the same idempotency discipline as the webhook ledger (BR-PAY-07). |
+| BR-OFF-31 | `[MONEY]` Sync converts leased reservations to decrements and releases the unsold remainder, in one transaction per sale. It is arithmetic against the lease, not a judgement call. |
+| BR-OFF-32 | `offline_capable` syncs the moment connectivity returns. `offline_first` syncs on its configured interval, and additionally whenever the lease is nearly exhausted or nearly expired. |
+| BR-OFF-33 | A sale that cannot be applied — expired lease, revoked lease, recalled batch — is **never silently dropped and never silently accepted**. It lands on a reconciliation queue with the reason, and is resolved by a human. |
+| BR-OFF-34 | `[MONEY]` A till MUST resync within a configured deadline (default 24 hours). Past it, offline selling stops until the till syncs: an unbounded backlog of unsynced sales is unbounded unrecorded revenue. |
+| BR-OFF-35 | Sync is resumable and incremental. A large backlog uploads in bounded chunks, so a poor connection makes progress rather than restarting (DB-027). |
+| BR-OFF-36 | `[SEC]` A till authenticates as a registered device with its own credentials, and its uploads are authorised against the shop and lease it holds. A till is a staff actor, not an anonymous client (SEC-09). |
+
+#### Monitoring
+
+| ID | Rule |
+|---|---|
+| BR-OFF-40 | Till connectivity, lease utilisation, time since last sync and unsynced sale count and value are exported as metrics, with alerts on a till past its sync deadline or exhausting its lease (doc 06 §5). |
+| BR-OFF-41 | Unsynced offline revenue is reported daily to finance with its value, so the amount of money recorded only on a device is a number rather than an impression (BR-RCV-24). |
+| BR-OFF-42 | Offline-sale events (`sale.completed_offline`, `sale.synced`, `sale.sync_rejected`, `till.went_offline`, `till.resynced`) are emitted per doc 06 §3, so how much selling actually happens offline is a measurement rather than an assumption. |
+| BR-OFF-43 | The scan-to-confirm budget of 200 ms p95 (BR-SCN-35) still applies online, because latency at a till is a queue of customers (doc 05 §7). |
 
 ---
 
