@@ -299,6 +299,27 @@ Not processing payments removes several real liabilities. It does not remove all
 | BR-RSP-06 | `[MONEY]` **Availability.** A hosted system that is down is a shop that cannot trade, with nothing to fall back on (ADR 0006, DEP-05). |
 | BR-RSP-07 | `[LEGAL]` Where the system's output is used for a statutory filing, it must be **traceable to source** — any figure on a return resolves to the documents behind it (BR-DOC-53). An accountant who cannot verify a number will not use it, and should not. |
 
+### How an owner's identity is actually verified
+
+The chain runs through the **GSTIN**, which is why the full Aadhaar number is never needed and never stored:
+
+```
+GSTIN  33ABCDE1234F1Z5
+        └── characters 3-12 are the holder's PAN ──► ABCDE1234F
+                                                       │
+                          owner's PAN on the KYC record ┘   must match
+
+Aadhaar last 4  ····9012   confirms "yes, that is my card", nothing more
+```
+
+| ID | Rule |
+|---|---|
+| BR-KYC-01 | `[LEGAL]` The **GSTIN is the primary identity**, and it carries its own proof: characters 3–12 are the holder's PAN, so the registration and the person are cross-referenced by construction rather than by trust. The database enforces the match (migration 00012). |
+| BR-KYC-02 | `[LEGAL]` The owner's PAN on the KYC record must equal the PAN embedded in the client's GSTIN for a proprietorship. A mismatch means the person registering is not the person the registration belongs to, which is the exact thing KYC is for. |
+| BR-KYC-03 | `[LEGAL]` **Aadhaar's last four digits are confirmatory only** — enough for a person to say "yes, that is my card" against a document already verified through the chain above. They are not the identity and they are not relied on as one. |
+| BR-KYC-04 | `[SEC][LEGAL]` The full Aadhaar number is **never stored**: the column accepts exactly four digits, so it cannot be, even by a careless import (migration 00014). A private company generally may not hold Aadhaar numbers without statutory authorisation, and a SaaS holding one for every shop owner in its customer base would be a breach target of a different order. |
+| BR-KYC-05 | `[LEGAL]` Where stronger Aadhaar assurance is genuinely required, it is **offline verification** — the UIDAI XML or QR flow — which returns a verified name and address and leaves a reference, without the number ever being held. |
+
 ### Client acceptance — tax rates and prices are the client's determination
 
 The client accepts, on the record, that **what to charge and what tax applies are their decisions**. The vendor supplies the machinery that applies them.
