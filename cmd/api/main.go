@@ -95,12 +95,12 @@ func run() error {
 		Authz: authz.NewRBAC(),
 	}
 
-	mods, err := app.Build(deps)
+	graph, err := app.Build(deps)
 	if err != nil {
 		return err
 	}
 
-	router, err := app.Router(deps, mods, rdb)
+	router, err := app.Router(deps, graph, rdb)
 	if err != nil {
 		return err
 	}
@@ -108,7 +108,7 @@ func run() error {
 	// HLT-004: one structured line describing exactly what is running, with
 	// secrets redacted, followed by the complete route table — the auditable
 	// security surface of the process (SEC-03).
-	log.Info("starting", "config", cfg.Redacted(), "modules", len(mods))
+	log.Info("starting", "config", cfg.Redacted(), "modules", len(graph.Modules))
 	router.LogRouteTable()
 
 	srv := &http.Server{

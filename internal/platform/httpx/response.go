@@ -13,6 +13,16 @@ type Response struct {
 	Status  int
 	Body    any
 	Headers map[string]string
+	// Cookies are set on the response. Built with SessionCookie and friends so
+	// that the security attributes are decided in one place rather than at each
+	// call site (BR-IDN-02).
+	Cookies []*http.Cookie
+}
+
+// WithCookies returns the response with cookies attached.
+func (r Response) WithCookies(cookies ...*http.Cookie) Response {
+	r.Cookies = append(r.Cookies, cookies...)
+	return r
 }
 
 // OK returns 200 with a JSON body.
@@ -56,6 +66,9 @@ type errorBody struct {
 func write(w http.ResponseWriter, resp Response) error {
 	for k, v := range resp.Headers {
 		w.Header().Set(k, v)
+	}
+	for _, c := range resp.Cookies {
+		http.SetCookie(w, c)
 	}
 
 	if resp.Body == nil || resp.Status == http.StatusNoContent {

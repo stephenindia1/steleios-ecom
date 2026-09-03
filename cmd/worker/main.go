@@ -91,7 +91,7 @@ func run() error {
 		Authz: authz.NewRBAC(),
 	}
 
-	mods, err := app.Build(deps)
+	graph, err := app.Build(deps)
 	if err != nil {
 		return err
 	}
@@ -117,9 +117,32 @@ func run() error {
 		}),
 	})
 
-	mux := app.Workers(mods)
+	mux := app.Workers(graph)
 
-	log.Info("starting", "config", cfg.Redacted(), "modules", len(mods))
+	// The scheduler only ENQUEUES; the server above consumes. Keeping them
+	// separate means periodic work is retried, rate-limited and observed exactly
+	// like any other task, rather than running on a goroutine of its own with no
+	// visibility (QUE-002).
+	scheduler := asynq.NewScheduler(redisOpt, &asynq.SchedulerOpts{
+		Logger: asynqLogger{log: log},
+		PostEnqueueFunc: func(info *asynq.TaskInfo, err error) {
+			if err != nil {
+				log.Error("periodic enqueue failed", "task_type", info.Type, "error", err.Error())
+			}
+		},
+	})
+	for _, p := range app.Schedules(graph) {
+		if _, err := scheduler.Register(p.Cron, p.Task); err != nil {
+			return fmt.Errorf("worker: schedule %s: %w", p.Task.Type(), err)
+		}
+		log.Info("periodic task registered", "task_type", p.Task.Type(), "cron", p.Cron)
+	}
+	if err := scheduler.Start(); err != nil {
+		return fmt.Errorf("worker: start scheduler: %w", err)
+	}
+	defer scheduler.Shutdown()
+
+	log.Info("starting", "config", cfg.Redacted(), "modules", len(graph.Modules))
 
 	// asynq's Run blocks and handles its own signal handling, so the worker
 	// terminates on the same signals as the API.

@@ -145,7 +145,14 @@ func newSessions() *fakeSessions {
 func (f *fakeSessions) Issue(_ context.Context, id uuid.UUID, at authz.ActorType, _, _ string) (string, session.Session, error) {
 	f.nextToken++
 	token := uuid.New().String()
-	s := session.Session{IdentityID: id, ActorType: at, Fingerprint: "fp"}
+	// The real store generates a CSRF secret per session and it must differ from
+	// the token: the CSRF cookie is readable by JavaScript, so a fake that reused
+	// the token here would hide exactly the mistake the handler test checks for.
+	s := session.Session{
+		IdentityID: id, ActorType: at,
+		CSRFSecret:  "csrf-secret-" + token,
+		Fingerprint: "fp",
+	}
 	f.issued[token] = s
 	return token, s, nil
 }

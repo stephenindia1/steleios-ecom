@@ -69,6 +69,9 @@ Every rule has a stable ID. **Cite the ID in code comments, test names, commit m
 26. Atomic conditional `UPDATE` over read-then-write — always, and especially for stock.
 27. Redis: every key has a TTL and is built in `platform/redis/keys.go`. `KEYS` is prohibited. Cache invalidation is explicit on write, never TTL expiry.
 28. Redis is a cache and coordination store. Its loss MUST degrade the system, never corrupt it.
+28b. **A read on the system path MUST NOT touch a tenant-scoped table.** With no tenant set `current_tenant_id()` is NULL, so every policy matches nothing and the query silently returns zero rows — a fail-closed design working correctly against a question it cannot answer. The two operations that genuinely precede tenancy, resolving an identity and listing its memberships, are the only exceptions, and each is explicitly provided for in the schema (migrations 00016, 00017). Anything else that needs this is asking the wrong question, or belongs after a shop is chosen.
+28c. **Migrations run privileged; the application never does.** `cmd/migrate` uses `POSTGRES_ADMIN_DSN` and refuses to start without it. The application role holds no DDL and no `BYPASSRLS` — a superuser is exempt from row-level security entirely, so an application running as one has no isolation at all, and `postgres.assertRLSApplies` refuses to start in that state.
+28d. A `security definer` function is a deliberate, reviewable hole in row-level security. Every one MUST pin `search_path`, be owned by a `nologin` role that exists only for it, have `execute` revoked from `public`, filter on a caller-supplied identifier that cannot widen the result, and carry its own isolation test.
 
 ## 6. Versioning — date based, append only
 
@@ -98,7 +101,7 @@ Every rule has a stable ID. **Cite the ID in code comments, test names, commit m
 41. **No feature is done without tests, in the same change.**
 42. Every `BR-*` rule needs at least one **passing and one failing** case, and the test names the rule. Priority: `[MONEY]` → `[SEC]` → `[LEGAL]` → state transitions → the rest.
 43. Test edge cases, boundaries, invalid/missing/malformed input and error paths — not only the happy path.
-44. Services are tested against fakes; repositories against real PostgreSQL via testcontainers. `go test -race` always. No `time.Sleep` for synchronisation — use the injected clock.
+44. Services are tested against fakes; **repositories against real PostgreSQL, connected as the least-privilege application role**. A fake cannot fail a row-level-security policy, so a repository verified only by a fake is not verified at all — migration 00017 is the worked example: the membership lookup returned nothing for every user, always, and every service test passed. `go test -race` always. No `time.Sleep` for synchronisation — use the injected clock.
 45. Every fixed bug gets a regression test in the same PR.
 
 ## 10. CI gates — cheapest first, no bypass

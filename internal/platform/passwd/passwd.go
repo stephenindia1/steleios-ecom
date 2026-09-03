@@ -214,6 +214,11 @@ const MinLength = 10
 const MaxLength = 256
 
 // CheckPolicy reports whether a proposed password is acceptable.
+//
+// Each reason is phrased to complete the sentence "Your password …", because
+// these are the one class of error message that is meant to reach the person
+// typing. PolicyReason is what renders them; nothing else may show an error
+// string to a client (BR-SEC-09).
 func CheckPolicy(password string) error {
 	n := utf8.RuneCountInString(password)
 	switch {
@@ -222,13 +227,30 @@ func CheckPolicy(password string) error {
 	case n > MaxLength:
 		return fmt.Errorf("%w: must be at most %d characters", ErrPolicy, MaxLength)
 	case strings.TrimSpace(password) == "":
-		return fmt.Errorf("%w: cannot be only whitespace", ErrPolicy)
+		return fmt.Errorf("%w: cannot be only spaces", ErrPolicy)
 	}
 
 	if isCommon(password) {
 		// Deliberately does not say which list it is on. That would tell an
 		// attacker their guess was close.
-		return fmt.Errorf("%w: this password is too common to be safe", ErrPolicy)
+		return fmt.Errorf("%w: is too common to be safe", ErrPolicy)
 	}
 	return nil
+}
+
+// PolicyReason renders a policy failure as a sentence for the person who typed
+// the password.
+//
+// It returns "" for any other error. That is the point of the function: a
+// handler cannot use it to put an arbitrary internal message on the wire, only
+// one of the authored reasons above (GO-028).
+func PolicyReason(err error) string {
+	if !errors.Is(err, ErrPolicy) {
+		return ""
+	}
+	_, reason, ok := strings.Cut(err.Error(), ErrPolicy.Error()+": ")
+	if !ok || reason == "" {
+		return "Choose a different password."
+	}
+	return "Your password " + reason + "."
 }

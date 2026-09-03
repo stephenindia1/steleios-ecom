@@ -35,6 +35,41 @@ type Module interface {
 	Health(ctx context.Context) error
 }
 
+// PeriodicTask is work a module wants run on a schedule.
+type PeriodicTask struct {
+	// Cron is the schedule, in cron syntax or asynq's "@every 1h" form.
+	Cron string
+	// Task is what gets enqueued. It carries the queue name, so a sweep runs on
+	// "low" and never delays anything a person is waiting for (QUE-002).
+	Task *asynq.Task
+}
+
+// Periodic is implemented by modules with scheduled work.
+//
+// It is deliberately optional and separate from Module: most modules have no
+// schedule, and forcing every one of them to return an empty slice would make
+// the common case carry the cost of the rare one.
+type Periodic interface {
+	Schedule() []PeriodicTask
+}
+
+// SchedulesOf collects the periodic tasks of every module that has any.
+//
+// Registering the schedule anywhere but here would mean a module's background
+// work could start running without appearing in the composition root, which is
+// the same failure mode as a route that mounts itself (MOD-03).
+func SchedulesOf(mods []Module) []PeriodicTask {
+	out := make([]PeriodicTask, 0, len(mods)) // DB-024
+	for _, m := range mods {
+		p, ok := m.(Periodic)
+		if !ok {
+			continue
+		}
+		out = append(out, p.Schedule()...)
+	}
+	return out
+}
+
 // Deps is the shared container every module factory receives.
 //
 // A module receives this and its explicit collaborators, and nothing else. It

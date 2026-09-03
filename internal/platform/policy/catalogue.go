@@ -142,6 +142,24 @@ var (
 		Timeout:   5 * time.Second, // BR-PAY-08
 	}
 
+	// SignedIn is any authenticated staff session, with NO permission required.
+	//
+	// It exists for the handful of routes every signed-in person must reach
+	// regardless of what they may do: sign out, change their own password,
+	// choose a shop, see who they are.
+	//
+	// It deliberately requires no role, which is what lets an account in the
+	// post-recovery locked state reach exactly these routes and nothing else —
+	// that account carries no roles at all, so any policy with a permission
+	// would shut it out of changing the password it is locked into changing
+	// (BR-REC-20).
+	SignedIn = Policy{
+		Name:      "signed_in",
+		Auth:      AuthAdmin,
+		CSRF:      true,
+		RateLimit: ratelimit.PerActor(120, time.Minute),
+	}
+
 	// --- Staff -------------------------------------------------------------
 
 	// AdminRead is any staff read: order lookup, customer lookup, reports.
@@ -270,7 +288,7 @@ var (
 func All() []Policy {
 	return []Policy{
 		Public, PublicCached, Probe,
-		AuthAttempt, OTPSend,
+		AuthAttempt, OTPSend, SignedIn,
 		GuestOrSession, CustomerSession,
 		CustomerOrderRead, CustomerOrderWrite, CustomerAddressWrite,
 		Checkout, ProviderWebhook,

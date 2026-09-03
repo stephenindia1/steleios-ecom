@@ -128,7 +128,7 @@ func (s *Service) Authenticate(ctx context.Context, email, password, ip, userAge
 	}
 	active := activeOnly(memberships)
 
-	token, _, err := s.sessions.Issue(ctx, ident.ID, authz.ActorAdmin, ip, userAgent)
+	token, sess, err := s.sessions.Issue(ctx, ident.ID, authz.ActorAdmin, ip, userAgent)
 	if err != nil {
 		return Authenticated{}, err
 	}
@@ -145,6 +145,7 @@ func (s *Service) Authenticate(ctx context.Context, email, password, ip, userAge
 
 	result := Authenticated{
 		Token:              token,
+		CSRFSecret:         sess.CSRFSecret,
 		Identity:           ident,
 		Memberships:        active,
 		MustChangePassword: ident.MustChangePassword,
@@ -169,7 +170,7 @@ func (s *Service) Authenticate(ctx context.Context, email, password, ip, userAge
 
 // SelectShop binds the session to one of the person's shops.
 func (s *Service) SelectShop(ctx context.Context, token string, t tenant.ID) (Membership, error) {
-	sess, err := s.sessions.Resolve(ctx, token)
+	sess, err := s.session(ctx, token)
 	if err != nil {
 		return Membership{}, err
 	}
@@ -209,7 +210,7 @@ func (s *Service) SelectShop(ctx context.Context, token string, t tenant.ID) (Me
 
 // ChangePassword replaces a password and signs every other device out.
 func (s *Service) ChangePassword(ctx context.Context, token, current, next string) error {
-	sess, err := s.sessions.Resolve(ctx, token)
+	sess, err := s.session(ctx, token)
 	if err != nil {
 		return err
 	}
@@ -263,7 +264,7 @@ func (s *Service) SignOut(ctx context.Context, token string) error {
 
 // SignOutEverywhere ends every session for the signed-in identity.
 func (s *Service) SignOutEverywhere(ctx context.Context, token string) (int64, error) {
-	sess, err := s.sessions.Resolve(ctx, token)
+	sess, err := s.session(ctx, token)
 	if err != nil {
 		return 0, err
 	}
@@ -331,6 +332,24 @@ func (s *Service) Resolve(ctx context.Context, token string) (authz.Actor, error
 	}
 
 	return actor, nil
+}
+
+// session resolves a token for the actions that need one.
+//
+// It translates "no live session" into the platform's unauthenticated error, so
+// a token that expired between the middleware admitting the request and the
+// handler running produces a 401 rather than a 500. Any other failure is the
+// store being unreachable and is passed through untouched, so the caller still
+// fails closed (SES-008).
+func (s *Service) session(ctx context.Context, token string) (session.Session, error) {
+	sess, err := s.sessions.Resolve(ctx, token)
+	if err != nil {
+		if errors.Is(err, session.ErrNotFound) {
+			return session.Session{}, authz.ErrUnauthenticated
+		}
+		return session.Session{}, err
+	}
+	return sess, nil
 }
 
 // recordFailure counts a bad password and locks out past the threshold.

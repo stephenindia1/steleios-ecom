@@ -83,7 +83,13 @@ type HTTP struct {
 
 // Postgres configures the database pool.
 type Postgres struct {
-	DSN               string
+	DSN string
+	// AdminDSN is the privileged connection used ONLY by migrations and by test
+	// setup that needs DDL. The application never opens it: a superuser is
+	// exempt from row-level security entirely, so running the API under one
+	// would silently disable every isolation policy in the schema (ADR 0007,
+	// postgres.assertRLSApplies).
+	AdminDSN          string
 	MaxConns          int32
 	MinConns          int32
 	MaxConnLifetime   time.Duration
@@ -151,6 +157,7 @@ func Load() (Config, error) {
 
 		Postgres: Postgres{
 			DSN:               get("POSTGRES_DSN", ""),
+			AdminDSN:          get("POSTGRES_ADMIN_DSN", ""),
 			MaxConns:          int32(number("POSTGRES_MAX_CONNS", 20, &errs)),
 			MinConns:          int32(number("POSTGRES_MIN_CONNS", 2, &errs)),
 			MaxConnLifetime:   duration("POSTGRES_MAX_CONN_LIFETIME", time.Hour, &errs),
@@ -264,6 +271,7 @@ func (c Config) Redacted() map[string]any {
 		"http_max_body_bytes":   c.HTTP.MaxBodyBytes,
 		"http_allowed_origins":  c.HTTP.AllowedOrigins,
 		"postgres_dsn":          redactDSN(c.Postgres.DSN),
+		"postgres_admin_dsn":    redactDSN(c.Postgres.AdminDSN),
 		"postgres_max_conns":    c.Postgres.MaxConns,
 		"postgres_stmt_timeout": c.Postgres.StatementTimeout.String(),
 		"redis_addr":            c.Redis.Addr,

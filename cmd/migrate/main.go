@@ -46,7 +46,22 @@ func run() error {
 			*command, cfg.Env)
 	}
 
-	db, err := sql.Open("pgx", cfg.Postgres.DSN)
+	// Migrations run PRIVILEGED and the application does not. A migration
+	// creates tables, roles and policies; the application role holds none of
+	// those rights, and must not, because DDL from the request path is how a
+	// SQL injection becomes a schema change (least privilege).
+	//
+	// Requiring the admin DSN rather than falling back to POSTGRES_DSN is
+	// deliberate: a silent fallback would run migrations as the application
+	// role, which is exactly the mistake this separation exists to prevent, and
+	// it would fail later with a confusing permission error instead of here
+	// with a clear one.
+	dsn := cfg.Postgres.AdminDSN
+	if dsn == "" {
+		return errors.New("POSTGRES_ADMIN_DSN is required: migrations run privileged, the application does not")
+	}
+
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
@@ -72,7 +87,7 @@ func run() error {
 	log.Info("applying migrations",
 		"command", *command,
 		"env", string(cfg.Env),
-		"database", cfg.Redacted()["postgres_dsn"])
+		"database", cfg.Redacted()["postgres_admin_dsn"])
 
 	if err := goose.RunContext(ctx, *command, db, "."); err != nil {
 		return fmt.Errorf("goose %s: %w", *command, err)

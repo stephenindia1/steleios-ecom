@@ -91,16 +91,14 @@ func scanIdentity(row rowScanner, i *Identity) error {
 	)
 }
 
-const membershipsSQL = `
-select s.id, s.tenant_id, coalesce(t.shop_code, ''), t.legal_name,
-       t.client_id, c.client_code, s.status,
-       coalesce(array_agg(a.role_code) filter (where a.role_code is not null), '{}')
-  from staff s
-  join tenants t on t.id = s.tenant_id
-  join clients c on c.id = t.client_id
-  left join staff_role_assignments a on a.staff_id = s.id
- where s.identity_id = $1
- group by s.id, s.tenant_id, t.shop_code, t.legal_name, t.client_id, c.client_code, s.status`
+// membershipsSQL calls the one function permitted to answer this question.
+//
+// The join it replaces returned nothing, always: staff, tenants, clients and
+// staff_role_assignments are all scoped by current_tenant_id(), which is NULL
+// here because choosing a shop is what this query is FOR. Migration 00017
+// explains the fix and why the bypass is a single narrow function rather than
+// four widened policies.
+const membershipsSQL = `select * from memberships_of_identity($1)`
 
 // MembershipsOf returns every shop the identity belongs to.
 //
