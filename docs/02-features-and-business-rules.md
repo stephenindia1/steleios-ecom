@@ -1146,12 +1146,24 @@ Payment recording is specified in §8A.6 and applies to **every channel**, not o
 
 ## 9A. Storefront orders — payment on delivery or by UPI QR
 
-The storefront takes **orders**, not payments (ADR 0008). A customer chooses how they will pay, and the shop records the payment when it arrives.
+The storefront takes **orders**, not payments (ADR 0008). A customer chooses when they will pay, and the shop records the payment when it arrives.
 
-| Method | When the customer pays | What Steleios does |
+**Both routes are UPI. No cash is collected on a storefront order.**
+
+| Route | When the customer pays | Where the money goes |
 |---|---|---|
-| **Payment on delivery** | On handover — cash or the delivery person's UPI QR | Records the payment at delivery |
-| **UPI QR** | On or after placing the order, by scanning the shop's QR | Records the payment when the shop confirms receipt |
+| **On delivery** | At handover, by scanning the shop's QR | Straight into the shop's account |
+| **Before delivery** | On or after ordering, using the shop's QR or UPI number | Straight into the shop's account |
+
+### What UPI-only removes, and what it does not
+
+**Removed entirely — cash.** No drawer, no shift counts, no variance, no delivery person carrying money. Cash skimming is the classic retail fraud and it is simply gone, because **the money never passes through anyone's hands**: it goes from the customer's app to the shop's account directly. A delivery person handles goods, never takings.
+
+**Also removed — partial reconciliation.** Every payment now leaves a trace in the UPI statement, so **100% of takings are matchable** rather than only the non-cash portion. Reconciliation stops being a sampling exercise and becomes complete, which is what makes `BR-CPM-21` a real control instead of a best effort.
+
+**Not removed — payee substitution.** UPI is a payee-addressed system, so a delivery person can still present *their own* QR instead of the shop's. That risk is unchanged by the choice of UPI.
+
+But it changes character in the shop's favour: with cash, skimming was **undetectable**; with UPI-only, every delivered order must have a matching credit in one known account, so a substituted payment shows up as a delivered order with no payment at the next reconciliation run. **It goes from invisible to caught within a day**, which is why the controls in §9A.1 are worth keeping rather than relaxing.
 
 ### Business rules
 
@@ -1177,13 +1189,62 @@ Money is collected outside the system, so **the one thing the system must get ri
 | ID | Rule |
 |---|---|
 | BR-STO-20 | `[SEC][MONEY]` The shop's UPI identifier is **configuration held on the shop record**, verified once at onboarding. It is never entered per order, never typed by a delivery person, and never taken from a form. A per-order payee field would be a way to redirect a shop's takings one order at a time. |
-| BR-STO-21 | `[SEC][MONEY]` **A delivery person presents the shop's QR, never their own.** Money reaching a delivery person's personal UPI instead of the shop's is the most likely fraud in this design, and the control is that the QR comes from the shop record in the app, not from the person's phone. |
-| BR-STO-22 | `[MONEY]` Cash and UPI collected by a delivery person are reconciled **against their round**, not only against each order: what they took out, what they brought back, what was recorded. A round that does not balance is an exception naming that person (BR-CPM-21). |
+| BR-STO-21 | `[SEC][MONEY]` **A delivery person presents the shop's QR, never their own.** With cash gone, payee substitution is the only remaining way to divert money, so it is where any fraud will concentrate. The control is that the QR is rendered by the app from the shop record — it is not an image on the person's phone, and there is no field for them to type a payee into. |
+| BR-STO-22 | `[MONEY]` A round is reconciled as **every delivered order having a matching credit** in the shop's account. The delivery person never holds money, so there is nothing to count in or out — but a delivered order with no corresponding payment is an exception naming that person, and it surfaces at the next reconciliation run rather than at a month-end stock-take (BR-CPM-21). |
+| BR-STO-22a | `[MONEY]` No cash is accepted on a storefront order. A customer who cannot pay by UPI is told before the order is confirmed, not at the door. |
 | BR-STO-23 | `[SEC]` Changing the shop's UPI identifier requires the `owner` role, re-authentication, and an audit entry, and notifies the owner out-of-band. It is the single highest-value configuration field in the system: whoever controls it controls where the money goes. |
 | BR-STO-24 | `[SEC][LEGAL]` Payment details sent to a customer go out on the registered channel and template (BR-CMP-12), drawn from the shop record. Steleios MUST NOT send a payment identifier supplied in a request. |
 | BR-STO-25 | `[SEC]` The shop's UPI identifier is shown to the customer **consistently across every touchpoint** — order confirmation, message, delivery. A payment identifier that varies between messages is the signature of a phishing attempt, and consistency is what lets a customer notice one. |
 | BR-STO-26 | `[SEC]` The customer is told, in the confirmation, to pay only the identifier shown by the shop and never one sent by anyone else. Customers are the ones targeted by this fraud, and a plain warning costs nothing. |
-| BR-STO-27 | `[MONEY]` A reference the customer submits is matched to a payment actually seen in the shop's account before goods are released (BR-STO-06). Where goods are already handed over at delivery, the collection is the delivery person's responsibility and reconciles against their round (BR-STO-22). |
+| BR-STO-27 | `[MONEY]` A reference the customer submits is matched to a payment actually seen in the shop's account before goods are released (BR-STO-06). Where goods are already handed over at delivery, the assertion is confirmed by a second person (§9A.2). |
+
+### 9A.2 Delivered and paid — a two-step confirmation
+
+The delivery person asserts. **A different person confirms.**
+
+> **Whoever takes a payment can never be the person who confirms it arrived.** With cash gone, presenting one's own QR instead of the shop's is the only remaining way to divert money (BR-STO-21), and a single-actor confirmation would make that undetectable again. Separating the two is what keeps it caught within a day.
+
+| Step | Who | What happens |
+|---|---|---|
+| 1 | **Delivery person** (`delivery` role) | Marks the order delivered and asserts the customer paid, with the reference and time. Order becomes `delivered_pending_verification`; payment is `paid_unverified`. |
+| 2 | **Customer care or manager** (`payment:verify`) | Checks the credit in the shop's UPI account and confirms. Order becomes `delivered`; payment becomes `paid`. |
+
+| ID | Rule |
+|---|---|
+| BR-STO-30 | `[MONEY]` A delivery person's assertion **never** marks a payment verified. It records a claim, with the actor, timestamp, reference and location where captured. |
+| BR-STO-31 | `[SEC][MONEY]` **The confirming actor MUST be a different person from the asserting one.** This is enforced in the service, not by role alone — a manager who personally delivered an order cannot confirm that order's payment (BR-ADM-04 pattern). |
+| BR-STO-32 | `[SEC]` Confirmation requires `payment:verify`, held by customer care, manager, finance, owner and admin — and by no role that takes payments. `counter_sales` and `delivery` MUST NOT hold it. |
+| BR-STO-33 | `[MONEY]` **Automated matching is the normal path.** Where a UPI or bank statement is imported, credits match recorded payments automatically and only the unmatched surface for human confirmation. Manual confirmation is the exception queue, not the daily grind — a control that requires hundreds of clicks a day is a control staff will route around. |
+| BR-STO-34 | `[MONEY]` Confirmation records **what was matched against**: the statement line or the account screen, the amount, and the actor. "I checked" is not an audit trail. |
+| BR-STO-35 | `[MONEY]` Bulk confirmation against an imported statement is permitted for efficiency, but each order's confirmation is recorded individually, with its own matched credit. A single click confirming fifty orders must still produce fifty auditable records. |
+| BR-STO-36 | `[MONEY]` An order left in `delivered_pending_verification` past a configured window (default 24 hours) becomes an **exception** naming the delivery person, with its value. This is the control that catches payee substitution — goods gone, no credit received. |
+| BR-STO-37 | `[MONEY]` Unverified-delivery exceptions are tracked per delivery person over time. One is a customer who paid late or a mistyped reference; a pattern is a finding (BR-CPM-27). |
+| BR-STO-38 | Goods are already with the customer at step 1, so a failed confirmation is a **collection problem, not a fulfilment one**. The order is not reversed; it becomes a receivable and appears on the ageing report (BR-DOC-42). |
+| BR-STO-39 | `[SEC]` A delivery person sees only their own assigned deliveries, and only for as long as they are assigned. The `delivery` role grants delivery updates and nothing else — no order browsing, no customer records, no reports. |
+| BR-STO-40 | Both steps emit events (`delivery.completed`, `delivery.payment_asserted`, `payment.verified`, `payment.verification_overdue`) per doc 06 §3, and both are audited (BR-ADM-06). |
+
+### 9A.3 Damage at the door — photograph, approve, adjust
+
+A customer should not pay for a damaged item, and should not have to pay in full and wait for a refund. So the delivery person photographs the damage, a manager approves, and the amount due is adjusted **before** the customer pays.
+
+**The legal wrinkle:** the invoice was issued when the goods left the shop (BR-DOC-13) and issued documents are immutable (BR-DOC-03). So the bill is not edited. A **credit note** is issued for the damaged lines, and the customer pays *invoice minus credit note*. The paperwork is correct and the customer's experience is identical.
+
+| ID | Rule |
+|---|---|
+| BR-DMG-01 | The delivery person photographs the damage and raises an adjustment request against specific order lines and quantities, with a reason code (`damaged_in_transit`, `wrong_item`, `short_shipped`, `expired`, `spoiled`). |
+| BR-DMG-02 | `[SEC][MONEY]` **A delivery person cannot approve their own adjustment.** Approval requires `order:write`, which the `delivery` role does not hold. Without this, "damaged" becomes a discount a delivery person can hand out — or collect the full amount for and keep the difference. |
+| BR-DMG-03 | `[SEC]` Photographs are mandatory for an adjustment: at least one per claimed line. An adjustment with no evidence is refused. |
+| BR-DMG-04 | `[SEC]` Uploads are content-sniffed rather than trusted by declared type, stripped of EXIF — a doorstep photo carries GPS — size-limited, and stored in object storage (BR-MED-06, BR-MED-07). |
+| BR-DMG-05 | Uploads are compressed on the device and retried in the background. A delivery person standing in a lift with one bar must not be blocked by an upload; the request is raised and the photo follows. |
+| BR-DMG-06 | `[LEGAL][MONEY]` An approved adjustment issues a **credit note** against the original invoice for the affected lines, with their tax reversal (BR-DOC-30, BR-DOC-31). The invoice is never edited. |
+| BR-DMG-07 | `[MONEY]` The amount due becomes invoice total minus credit note total, and **that** is the amount shown to the customer and expected in reconciliation (BR-CPM-20). |
+| BR-DMG-08 | `[MONEY]` Because the shop's QR is static and carries no amount (BR-CPM-09), the expected amount is the reconciliation target. A credit received that matches neither the original nor the adjusted total is an exception. |
+| BR-DMG-09 | `[MONEY]` **A response deadline is mandatory** (default 5 minutes). A delivery person cannot stand at a door indefinitely waiting for a manager. On timeout the delivery person chooses: hand over and let the customer pay the original amount, with the adjustment processed as a normal return afterwards; or withhold the affected lines and deliver the rest. Both outcomes are recorded, and the choice is theirs because they are the one present. |
+| BR-DMG-10 | Timeout rate is monitored. Managers who routinely miss the window turn a doorstep control into a doorstep argument, and that is a staffing finding rather than a software one. |
+| BR-DMG-11 | `[LEGAL]` The customer acknowledges the adjustment — an OTP to their registered number, or a signature capture — before payment. Without acknowledgement there is nothing to point at when they later dispute what they agreed to. |
+| BR-DMG-12 | `[MONEY]` Rejected lines return to `quarantine`, never to sellable stock, and are written off or returned to the supplier through the normal RTV path (BR-RET-07, §12A). |
+| BR-DMG-13 | `[MONEY]` Damage rates are reported by **reason code, by supplier, by batch and by delivery person**. Damage concentrated in one supplier's batches is a purchasing conversation; damage concentrated on one delivery route is a different conversation entirely. |
+| BR-DMG-14 | Adjustment events (`delivery.adjustment_requested`, `delivery.adjustment_approved`, `delivery.adjustment_rejected`, `delivery.adjustment_timed_out`) are emitted per doc 06 §3, and every approval is audited with the actor, the lines, the value and the evidence (BR-ADM-06). |
 
 ---
 
@@ -1342,7 +1403,8 @@ Roles are defined once, in `internal/platform/authz`, and enforced only through 
 | `owner` | Everything, including user and role management and GST rate changes | — the role that cannot be locked out |
 | `admin` | Identical to `owner`; the technical counterpart | — |
 | `manager` | Orders, stock adjustment, catalog, **pricing**, refunds, purchasing, marketing, loyalty, reports | **User management** — a manager must not be able to grant themselves more. **Tax rates** — legally consequential, notification-backed, owner level (BR-TAX-09). **Contact exports** — the highest-volume data-loss path |
-| `counter_sales` | Catalog read, stock read, order read and **create**, loyalty award and redeem | **Refunds** — the one till action that moves money outward; a return at the counter routes to a manager. **Stock adjustment** — they sell stock, they do not correct it. **Customer read** — a till needs a loyalty lookup, not a customer browser |
+| `counter_sales` | Catalog read, stock read, order read and **create**, loyalty award and redeem | **Refunds** — the one till action that moves money outward; a return at the counter routes to a manager. **Stock adjustment** — they sell stock, they do not correct it. **Customer read** — a till needs a loyalty lookup, not a customer browser. **Payment verification** — they take payments, so they cannot confirm them (BR-STO-31) |
+| `delivery` | `delivery:update` only — see assigned deliveries, mark delivered, assert payment taken | **Everything else.** No order browsing, no customer records, no catalog, no reports. Above all **payment verification**: the person who took the payment can never be the person who confirms it arrived, which is the control that catches payee substitution (BR-STO-31) |
 | `data_entry` | Catalog read and write, stock read, purchasing read | **Pricing, orders, customer data, exports** — usually the largest group of accounts on the least controlled hardware, so it gets the smallest reach into money and personal data |
 | `viewer` | Read orders, customers, catalog, reports, purchasing | Any write |
 | `support` | viewer + order write (notes, address correction pre-dispatch, cancellation) | Refunds, stock adjustment |

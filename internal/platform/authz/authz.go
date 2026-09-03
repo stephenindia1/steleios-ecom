@@ -81,6 +81,14 @@ const (
 	// refunds — a return at the till is routed to a manager, because a refund
 	// is the one counter action that moves money outward (BR-ADM-04).
 	RoleCounterSales Role = "counter_sales"
+	// RoleDelivery is a delivery person: see their assigned deliveries, mark
+	// one delivered, and assert that the customer paid.
+	//
+	// Deliberately NOT payment verification. Under UPI-only, presenting one's
+	// own QR instead of the shop's is the sole remaining way to divert money,
+	// so the person who takes a payment must never be the person who confirms
+	// it arrived (BR-STO-31).
+	RoleDelivery Role = "delivery"
 
 	RoleViewer     Role = "viewer"
 	RoleSupport    Role = "support"
@@ -114,6 +122,14 @@ const (
 	ActionLoyaltyWrite    Action = "loyalty:write"
 	ActionReportRead      Action = "report:read"
 	ActionUserManage      Action = "user:manage"
+
+	// ActionDeliveryUpdate lets a delivery person mark an assigned delivery
+	// as delivered and assert that payment was taken.
+	ActionDeliveryUpdate Action = "delivery:update"
+	// ActionPaymentVerify confirms that a recorded payment actually arrived in
+	// the shop's account. It is the checker half of a maker-checker control and
+	// MUST NOT be held by anyone who can take a payment (BR-STO-31).
+	ActionPaymentVerify Action = "payment:verify"
 )
 
 // Actor is the principal performing an action.
@@ -159,9 +175,14 @@ var grants = map[Role][]Action{
 		ActionOrderRead, ActionCatalogRead, ActionInventoryRead,
 		ActionCustomerRead, ActionReportRead, ActionPurchasingRead,
 	},
+	// Customer care. Holds payment verification because confirming a UPI credit
+	// against the shop's account is exactly the kind of check a support desk
+	// does all day — and support never takes a payment, so it is a valid
+	// checker (BR-STO-31).
 	RoleSupport: {
 		ActionOrderRead, ActionOrderWrite, ActionCatalogRead,
 		ActionInventoryRead, ActionCustomerRead, ActionReportRead,
+		ActionPaymentVerify,
 	},
 	RoleOps: {
 		ActionOrderRead, ActionOrderWrite, ActionCatalogRead,
@@ -170,7 +191,7 @@ var grants = map[Role][]Action{
 	},
 	RoleFinance: {
 		ActionOrderRead, ActionRefundWrite, ActionCustomerRead,
-		ActionReportRead, ActionPurchasingRead,
+		ActionReportRead, ActionPurchasingRead, ActionPaymentVerify,
 	},
 	RoleCatalog: {
 		ActionCatalogRead, ActionCatalogWrite, ActionInventoryRead,
@@ -196,7 +217,7 @@ var grants = map[Role][]Action{
 		ActionInventoryRead, ActionInventoryWrite, ActionRefundWrite,
 		ActionPricingWrite, ActionCustomerRead, ActionPurchasingRead,
 		ActionPurchasingWrite, ActionMarketingWrite, ActionLoyaltyWrite,
-		ActionReportRead,
+		ActionReportRead, ActionPaymentVerify,
 	},
 
 	// A data entry executive maintains product records and nothing else. No
@@ -211,10 +232,20 @@ var grants = map[Role][]Action{
 	// A counter sales user sells: resolve a code, choose a batch, take payment,
 	// award or redeem loyalty points. They read stock but never adjust it, and
 	// they never refund — a return at the till goes to a manager.
+	//
+	// They take payments, so they cannot verify them (BR-STO-31).
 	RoleCounterSales: {
 		ActionCatalogRead, ActionInventoryRead,
 		ActionOrderRead, ActionOrderWrite,
 		ActionLoyaltyWrite,
+	},
+
+	// A delivery person sees their assigned deliveries and marks them
+	// delivered. That is all. They cannot browse orders, read customer records
+	// beyond the delivery in hand, or verify that a payment arrived — the last
+	// of which is the whole point of the maker-checker split.
+	RoleDelivery: {
+		ActionDeliveryUpdate,
 	},
 }
 
@@ -227,7 +258,7 @@ var everything = []Action{
 	ActionPricingWrite, ActionTaxWrite, ActionCustomerRead,
 	ActionPurchasingRead, ActionPurchasingWrite, ActionMarketingWrite,
 	ActionMarketingExport, ActionLoyaltyWrite, ActionReportRead,
-	ActionUserManage,
+	ActionUserManage, ActionDeliveryUpdate, ActionPaymentVerify,
 }
 
 // ownedResourceTypes are resource types a customer may access by ownership

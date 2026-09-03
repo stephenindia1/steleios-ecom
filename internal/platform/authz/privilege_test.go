@@ -150,6 +150,66 @@ func TestCounterSalesCanSellButNotAdjustOrRefund(t *testing.T) {
 	}
 }
 
+func TestPaymentTakersCannotVerifyPayments(t *testing.T) {
+	t.Parallel()
+
+	// BR-STO-31, the maker-checker control. Under UPI-only, presenting one's
+	// own QR instead of the shop's is the sole remaining way to divert money,
+	// so whoever takes a payment must never be the one who confirms it landed.
+	// If this test ever passes trivially because a role gained both, the
+	// control is gone and nobody would notice at runtime.
+	takers := []authz.Role{authz.RoleCounterSales, authz.RoleDelivery}
+
+	for _, r := range takers {
+		held := authz.ActionsFor(r)
+		if slices.Contains(held, authz.ActionPaymentVerify) {
+			t.Errorf("role %q both takes payments and can verify them; the maker-checker split is broken", r)
+		}
+	}
+
+	// And the checkers must actually be able to check, or the queue never
+	// clears and staff route around the control.
+	for _, r := range []authz.Role{
+		authz.RoleSupport, authz.RoleManager, authz.RoleFinance,
+		authz.RoleOwner, authz.RoleAdmin,
+	} {
+		if !slices.Contains(authz.ActionsFor(r), authz.ActionPaymentVerify) {
+			t.Errorf("role %q should be able to verify payments", r)
+		}
+	}
+}
+
+func TestDeliveryRoleIsMinimal(t *testing.T) {
+	t.Parallel()
+
+	held := authz.ActionsFor(authz.RoleDelivery)
+
+	if !slices.Contains(held, authz.ActionDeliveryUpdate) {
+		t.Error("a delivery person must be able to mark a delivery delivered")
+	}
+
+	// A delivery person carries goods, not authority. They handle no money at
+	// all under UPI-only, and they must not be able to browse the business.
+	for _, a := range []authz.Action{
+		authz.ActionPaymentVerify,
+		authz.ActionOrderWrite,
+		authz.ActionCustomerRead,
+		authz.ActionCatalogRead,
+		authz.ActionInventoryRead,
+		authz.ActionReportRead,
+		authz.ActionRefundWrite,
+		authz.ActionUserManage,
+	} {
+		if slices.Contains(held, a) {
+			t.Errorf("delivery holds %q; the role must carry goods, not authority", a)
+		}
+	}
+
+	if len(held) != 1 {
+		t.Errorf("delivery holds %d actions (%v); it should hold exactly one", len(held), held)
+	}
+}
+
 func TestOnlyOwnerAdminAndMarketingCanExportContactData(t *testing.T) {
 	t.Parallel()
 
