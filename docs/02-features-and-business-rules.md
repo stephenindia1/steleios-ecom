@@ -1017,6 +1017,9 @@ This is now the accounting core of the product: a complete, GST-compliant docume
 | Inward | Goods received from a supplier | **Purchase invoice** recorded against the receipt |
 | Inward | Return to supplier | **Debit note**, matched to the supplier's credit note |
 | Either | Goods moving without a sale | **Delivery challan** |
+| Outward | Money received before the supply | **Receipt voucher** |
+| Outward | An advance refunded without a supply | **Refund voucher** |
+| Inward | A supply attracting reverse charge | **Payment voucher** |
 
 ### 9.1 Numbering and immutability
 
@@ -1072,6 +1075,19 @@ Payment recording is specified in §8A.6 and applies to **every channel**, not o
 | BR-DOC-41 | `[MONEY]` Outstanding balance per customer and per supplier is derived from documents minus allocated payments. It is never a stored figure someone can adjust. |
 | BR-DOC-42 | Ageing reports — receivables and payables by bucket — are produced from the same data. A shop's most common question is who owes it money and who it owes. |
 | BR-DOC-43 | `[MONEY]` Advances received before an invoice are recorded as such and adjusted against the invoice when it is issued. |
+
+#### Receipts and vouchers
+
+A **receipt** acknowledges money; an **invoice** records a supply. They are usually printed together at the counter, and they are still two different documents with different rules.
+
+| ID | Rule |
+|---|---|
+| BR-DOC-44 | `[LEGAL]` Money received **before** the supply requires a **receipt voucher** with its own series: supplier and customer details, amount, the rate and tax on the advance, and the place of supply. Recording it as an invoice would report a supply that has not happened. |
+| BR-DOC-45 | `[LEGAL]` When the supply follows, the invoice **adjusts the advance** and references the receipt voucher, so the tax is not accounted for twice. |
+| BR-DOC-46 | `[LEGAL]` An advance refunded without a supply requires a **refund voucher** referencing the receipt voucher. The advance's tax is reversed in the period the voucher is issued. |
+| BR-DOC-47 | `[LEGAL]` A **payment voucher** is issued for a supply attracting reverse charge, where the shop rather than the supplier accounts for the tax. |
+| BR-DOC-48 | `[MONEY]` A counter sale's printed receipt **is** the tax invoice — goods and money change hands together, so there is no advance and no separate voucher (BR-DOC-14). |
+| BR-DOC-49 | `[LEGAL]` Every voucher type follows §9.1: its own gapless series per shop, numbered only on issue, immutable once issued, and reprintable identically years later. |
 
 ### 9.6 GST returns
 
