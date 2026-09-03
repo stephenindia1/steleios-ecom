@@ -201,6 +201,17 @@ const (
 	// ActionPlatformOperate covers service-level operations: health, migrations,
 	// staged rollouts. Not a client's data under any circumstances.
 	ActionPlatformOperate Action = "platform:operate"
+	// ActionSupportSessionRequest asks a client for time-boxed access to
+	// diagnose a fault in their data (docs/09 §4B).
+	//
+	// It grants NOTHING by itself. It is the ability to ask, and the client
+	// grants or refuses. The resulting access is separate, scoped to that
+	// client, time-boxed, read-only by default, visible to them while it runs,
+	// revocable by them, and audited into their own log.
+	//
+	// It is a platform action rather than a shop one precisely because holding
+	// it must not imply holding any business-data action (BR-SUP-10).
+	ActionSupportSessionRequest Action = "support_session:request"
 )
 
 // shopActions is every action that touches a client's business. A platform role
@@ -223,7 +234,7 @@ func platformActions() []Action {
 	return []Action{
 		ActionClientRead, ActionClientManage,
 		ActionSubscriptionRead, ActionSubscriptionManage,
-		ActionPlatformOperate,
+		ActionPlatformOperate, ActionSupportSessionRequest,
 	}
 }
 
@@ -359,14 +370,14 @@ var grants = map[Role][]Action{
 	RoleSaaSAdmin: {
 		ActionClientRead, ActionClientManage,
 		ActionSubscriptionRead, ActionSubscriptionManage,
-		ActionPlatformOperate,
+		ActionPlatformOperate, ActionSupportSessionRequest,
 	},
 
 	// Vendor support: read-only over provisioning and billing, so a question
 	// about a subscription can be answered without reaching into the client's
 	// business.
 	RoleSaaSSupport: {
-		ActionClientRead, ActionSubscriptionRead,
+		ActionClientRead, ActionSubscriptionRead, ActionSupportSessionRequest,
 	},
 }
 

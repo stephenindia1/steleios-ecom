@@ -122,6 +122,42 @@ The owner pays the vendor by **Razorpay**: a subscription for monthly recurring,
 
 ---
 
+## 4B. Vendor support — technical only, and break-glass when it is not enough
+
+`saas_admin` and `saas_support` exist to keep **the platform** working: provisioning, subscriptions, service health, and technical faults. They hold **no business-data actions at all** (BR-ADM-14), and that is enforced by test rather than by policy.
+
+| The vendor helps with | The client handles |
+|---|---|
+| The service is down or slow | A stock count is wrong |
+| A page errors or a calculation looks wrong | A customer wants a refund |
+| Provisioning, subscriptions, activation | Which supplier to buy from |
+| Export or import failing | What tax rate applies |
+| A bug in the software | How to run their shop |
+
+### The gap this creates, and how it is closed
+
+Some technical faults **are** in the data. An invoice total that looks wrong, an export missing rows, a reconciliation that will not match — none can be diagnosed from outside. A vendor with categorically no access cannot fix them, and the predictable result is that someone quietly grants themselves a shop role to get the job done. That is far worse than a controlled path, because it is invisible.
+
+So there is a controlled path, and it is deliberately uncomfortable to use.
+
+| ID | Rule |
+|---|---|
+| BR-SUP-10 | `[SEC]` **Default is no access.** Vendor staff hold no standing ability to read a client's business data. Break-glass is an exception that must be invoked, never a permission that sits waiting. |
+| BR-SUP-11 | `[SEC]` The normal route is the **client granting it**: the owner approves a time-boxed support session in-app, for a stated reason. Consent from the person whose data it is beats any internal approval. |
+| BR-SUP-12 | `[SEC]` Emergency access without prior consent requires **two named vendor staff**, a recorded reason, and **immediate notification to the owner** — not a notification afterwards, and not one buried in a monthly report. |
+| BR-SUP-13 | `[SEC]` Access is **read-only by default**. Writing to a client's data requires a separate, higher approval and a specific stated change; "we fixed it for you" without a record of what changed is not acceptable. |
+| BR-SUP-14 | `[SEC]` Access is **time-boxed** (default 4 hours) and expires on its own. It is never open-ended, and it is not renewed silently. |
+| BR-SUP-15 | `[SEC]` Access is **scoped to one client**, never to several, and never platform-wide. |
+| BR-SUP-16 | `[SEC]` Every action taken during a session is audited **into that client's own audit log**, attributed to the vendor staff member. The client can see exactly what was looked at and when (BR-LIC-51). |
+| BR-SUP-17 | `[SEC]` The client can **revoke** an active session at any moment, without contacting the vendor. |
+| BR-SUP-18 | `[SEC]` A session is visible while it is running — a banner the client cannot miss — not only discoverable in a log afterwards. |
+| BR-SUP-19 | Break-glass usage is **reported**: how often, by whom, for which clients, and whether the client had consented. A capability nobody reviews becomes a capability quietly used (BR-LIC-44). |
+| BR-SUP-20 | `[SEC]` Break-glass MUST NOT be used for anything but diagnosing a fault: not for sales, not for analytics, not for curiosity, and not to answer a question the client could answer themselves. |
+
+> **Why this is worth the friction.** A vendor that can never see data will eventually have staff working around the rule. A vendor with quiet standing access has no defensible answer when a client asks who read their books. A narrow, consented, time-boxed, client-visible path is the only version that survives both problems.
+
+---
+
 ## 5. Vendor side
 
 | ID | Rule |
