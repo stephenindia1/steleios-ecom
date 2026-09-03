@@ -184,6 +184,65 @@ A code fix does not repair rows a bug already wrote. That case is real, and it h
 
 ---
 
+## 4C. Account recovery — when the owner has lost everything
+
+An owner who has lost their email **and** their password cannot self-recover: the OTP path needs a channel they still hold. This is the one case where the vendor legitimately reaches into a client account, and it is an **account-takeover vector** — someone telephoning support claiming to be the owner is the oldest attack there is.
+
+The shape is: **verify hard, reset, hand over a generated password, and let them do nothing at all until they change it.**
+
+```
+verify identity   out-of-band, against registration records
+      ▼
+reset             all sessions invalidated; generated password issued
+      ▼
+LOCKED            the account can do exactly one thing: change the password
+                  no sales, no data, no exports, no configuration
+      ▼
+first login       password changed → normal access resumes
+```
+
+### Verification comes first
+
+| ID | Rule |
+|---|---|
+| BR-REC-01 | `[SEC]` Recovery is refused until the requester is verified **against the registration record**: client code, GSTIN, registered business address and the registered mobile. Details a stranger could find on an invoice are not sufficient on their own. |
+| BR-REC-02 | `[SEC]` Verification is **out-of-band and multi-factor**: an OTP to the registered mobile, plus confirmation of registered details. A single channel is not enough, because the premise of the request is that a channel was lost. |
+| BR-REC-03 | `[SEC]` The reset requires **two named vendor staff**, the same standard as break-glass and suspension (BR-SUP-12, BR-LIC-41). One person must not be able to hand over a business. |
+| BR-REC-04 | `[SEC]` Repeated or failed recovery attempts are **rate-limited and alerted**. A burst of them against one client is an attack in progress, not a forgetful customer. |
+| BR-REC-05 | `[SEC]` Recovery MUST NOT be available for an identity the requester cannot prove they own. "The owner is unavailable, I work here" is a refusal, not a fast path. |
+
+### The reset
+
+| ID | Rule |
+|---|---|
+| BR-REC-10 | `[SEC]` The generated password is **cryptographically random** (crypto/rand, GO-076), single-use, and expires if unused within a short window (default 1 hour). |
+| BR-REC-11 | `[SEC]` It is delivered **out-of-band to the registered mobile**, never to the email address in question — the premise is that the email is lost or compromised. |
+| BR-REC-12 | `[SEC]` It is stored only as an Argon2id hash, exactly like any password, and **never logged, never shown in an audit entry, and never retained in a support ticket** (BR-IDN-01, BR-SEC-07). |
+| BR-REC-13 | `[SEC]` The reset **invalidates every existing session** for that identity (BR-IDN-03). If the account was already compromised, the attacker is signed out by the same action that recovers it. |
+| BR-REC-14 | `[SEC]` The owner is **notified by SMS to the registered mobile**, immediately, that a recovery took place and who performed it. **SMS is the channel that matters here**: the email address is precisely what was lost, changed or compromised, so an email notification could land in an attacker's inbox — or in one nobody reads. The phone is the channel the vendor just verified against, so it is the one channel known to reach the real owner. Any other registered channel is notified as well, but the SMS is the one that must be sent. |
+| BR-REC-14a | `[SEC]` **Every change the vendor makes to the account is named in that SMS** — the password was reset, and the email address was changed to *this* value. An owner who did not request it must be able to tell from the message alone that something is wrong, without signing in to find out. |
+| BR-REC-14b | `[SEC]` If the registered mobile cannot be reached, recovery **does not proceed**. There is no fallback to email, because the email is the thing in doubt. A shop that has lost both its email and its phone is a case for verified re-onboarding, not a faster reset. |
+| BR-REC-15 | `[SEC]` The reset is audited into the **client's own audit log** (BR-LIC-51), attributed to both vendor staff. A recovery is a thing the client can see happened to them. |
+| BR-REC-16 | `[SEC]` A password reset grants the vendor **no access to the client's data**. It changes a credential; it does not create a session, and no vendor staff member signs in as the client (BR-SUP-30). |
+
+### The locked state — the control that makes this safe
+
+> **Between the reset and the password change, the account can do exactly one thing: change its password.** Nothing else — no sale, no order, no export, no configuration change, no reading customer data.
+
+| ID | Rule |
+|---|---|
+| BR-REC-20 | `[SEC][MONEY]` An identity in `must_change_password` is **denied every action** except changing its own password and signing out. This is enforced in the authorization layer, not by hiding buttons (SEC-09). |
+| BR-REC-21 | `[SEC][MONEY]` **No transaction of any kind is permitted in that state.** No invoice, no payment record, no stock movement, no document. If the reset was socially engineered, the attacker gains a locked account and a notification racing them to the real owner — which is a far better outcome than a working session. |
+| BR-REC-22 | `[SEC]` The state persists across sign-ins. Signing out and back in with the generated password lands in the same locked state; it cannot be waited out or bypassed by reconnecting. |
+| BR-REC-23 | `[SEC]` The new password must differ from the generated one and meet the normal policy (BR-IDN-01). Changing it clears the state and issues a fresh session. |
+| BR-REC-24 | `[SEC]` If the generated password is not used within its window, it expires and the whole verification process starts again. An unused reset must not sit valid indefinitely. |
+| BR-REC-25 | `[SEC]` On the password change, the owner is **notified again by SMS**. Two messages for one recovery is deliberate: the first says it started, the second says it completed. A real owner who receives the first and did not request it now has a window to call before the second arrives — and one who receives the second without the first knows the account has been taken. |
+| BR-REC-26 | `[SEC]` The registered mobile **cannot be changed during a recovery**, nor while the account is locked. Otherwise an attacker's first act would be to redirect the very channel that would have warned the owner. Changing the mobile is a separate act, OTP-verified against the existing number (§6). |
+
+**Why the lock matters more than the verification.** Verification can be defeated — a determined attacker with the client's GSTIN and a plausible story will occasionally get through, in any organisation. The locked state is what bounds the damage when that happens: the attacker cannot trade, cannot export, cannot read a customer list. They can change a password, which is loud, notified twice, and reversible. Controls that assume verification always works are the ones that fail badly.
+
+---
+
 ## 5. Vendor side
 
 | ID | Rule |
