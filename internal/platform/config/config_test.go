@@ -240,6 +240,15 @@ func TestLoadRejectsMalformedValues(t *testing.T) {
 func TestLoadFailsWithoutRequiredValues(t *testing.T) {
 	t.Setenv("STELEIOS_ENV", "local")
 
+	// This test asserts the ABSENCE of a variable, so it must control that
+	// variable rather than assume the ambient environment is clean. Without
+	// this line the test passes locally and fails the moment anyone exports
+	// POSTGRES_DSN — which CI does, for the database integration tests.
+	//
+	// t.Setenv restores the previous value afterwards, and Load treats an
+	// empty value as unset.
+	t.Setenv("POSTGRES_DSN", "")
+
 	// HLT-005: starting degraded is prohibited, so a missing DSN is a boot
 	// failure rather than a lazily-discovered connection error.
 	if _, err := config.Load(); err == nil {

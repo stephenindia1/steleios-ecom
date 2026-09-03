@@ -231,6 +231,32 @@ But the platform is not passive about it. It cannot know which supplier is right
 | BR-ACP-18 | `[LEGAL]` Supplier details are versioned like any other money-affecting reference data. A purchase invoice snapshots the supplier details in force at receipt, so a later address correction never rewrites the tax treatment of a past purchase (BR-VER-01, BR-VER-03). |
 | BR-ACP-19 | `[MONEY]` The same applies outward: the **customer's** state against the shop's determines CGST/SGST or IGST on a sale, and `place_of_supply` is snapshotted on the order at placement (BR-PRC-04, BR-PRC-05). |
 
+### Nothing issued can be altered — by anyone
+
+> **Once an invoice is issued or a log is written, there is no edit and no delete. The only remedy is a return, recorded as its own document.**
+
+This is worth stating to clients plainly, because it is a **feature** rather than a restriction. Books nobody can quietly rewrite are books that hold up in an audit, settle a dispute on the record, and cannot be adjusted by a disgruntled employee on their last afternoon.
+
+| ID | Rule |
+|---|---|
+| BR-IMM-01 | `[LEGAL]` An **issued invoice cannot be edited or deleted** — not by the client, not by their staff, not by the application. A cancelled invoice keeps its number and is marked cancelled; a gap in the series is what an auditor asks about first (BR-DOC-02, BR-DOC-03). |
+| BR-IMM-02 | `[LEGAL]` The only corrections are documents in their own right: a **credit note** to reduce or reverse, a **debit note** to increase. Each references the original, and the original stays exactly as issued (BR-DOC-30, BR-DOC-32). |
+| BR-IMM-03 | `[LEGAL]` **Taking a return is the remedy.** A customer who was overcharged, sent the wrong thing, or is returning goods is handled by a return and a credit note — never by amending what was issued. |
+| BR-IMM-04 | `[SEC]` The **audit log** accepts no UPDATE and no DELETE. **Domain events** are immutable except for being marked published. Neither can be rewritten to make a past action look different. |
+| BR-IMM-05 | `[SEC]` This is enforced **by the database**, in two independent layers: triggers that refuse the operation, and privileges revoked from the application role so the operation is rejected before a trigger even runs. Application code being wrong is not enough to defeat it. |
+| BR-IMM-06 | `[SEC]` Client acceptances are immutable except for supersession, so what a client agreed to and when cannot be revised afterwards (BR-ACP-03). |
+
+#### Being accurate about who "anyone" is
+
+An honest statement of this matters more than a maximal one, because a client will eventually ask.
+
+| ID | Rule |
+|---|---|
+| BR-IMM-10 | **The client cannot.** There is no interface, no support action, and no application path that edits or deletes an issued document or a log entry. This is absolute and it is what the client is being told. |
+| BR-IMM-11 | **The application cannot.** Even a defect or a compromised application session cannot do it: the privileges are not held (BR-IMM-05). |
+| BR-IMM-12 | `[SEC]` **The vendor operates the database, so a deliberate privileged intervention is physically possible.** Claiming otherwise would be false, and a client entitled to rely on this deserves the true version. What is guaranteed instead: no product feature does it, such an act would require an out-of-band administrative action against the vendor's own terms, and infrastructure-level access is itself logged and audited (BR-LIC-51). |
+| BR-IMM-13 | `[LEGAL]` Where stronger assurance is needed, the route is external: periodic export to the client's own storage (BR-DOC-60), which puts a copy beyond the vendor's reach entirely. That is a real answer, and it is better than a promise that cannot be verified. |
+
 ### How this is stated commercially
 
 | ID | Rule |
