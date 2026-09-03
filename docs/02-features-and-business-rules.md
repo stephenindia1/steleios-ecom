@@ -957,11 +957,15 @@ This is a deliberate and reasonable division: the shop already has a QR and a ca
 
 **No counter payment is verified at the moment of sale.** Reconciliation is therefore not a safety net for an unusual case — it is the primary financial control for the entire counter channel.
 
-| Method | What the platform holds | Available offline |
-|---|---|---|
-| **Cash** | Amount tendered and change given; reconciled against the drawer count | Yes |
-| **UPI** — the shop's own QR | The transaction reference the operator reads off the customer's confirmation | Yes |
-| **Card** — the shop's own terminal | Terminal id, approval/RRN reference, network, last four | Yes |
+| Method | What the platform records | Counter | Storefront |
+|---|---|---|---|
+| **Cash** | Amount tendered and change given; reconciled against the drawer count at shift close | ✅ | ❌ |
+| **UPI** — the shop's own QR | Transaction reference (UTR/RRN) read off the customer's confirmation, and the amount | ✅ | ✅ |
+| **Card** — the shop's own terminal | Terminal id, approval/RRN reference, card network, last four digits | ✅ | ❌ |
+
+**The counter takes all three; the storefront is UPI-only.** A counter customer is standing in front of an operator with a drawer and a terminal. A storefront order is fulfilled by a delivery person who handles goods and never money, so cash and card have nowhere to happen (§9A, BR-STO-22a).
+
+In every case the platform records **what was paid, how, and its reference** — and never processes it (ADR 0008).
 
 | ID | Rule |
 |---|---|
