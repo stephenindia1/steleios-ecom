@@ -145,7 +145,7 @@ So there is a controlled path, and it is deliberately uncomfortable to use.
 | BR-SUP-10 | `[SEC]` **Default is no access.** Vendor staff hold no standing ability to read a client's business data. Break-glass is an exception that must be invoked, never a permission that sits waiting. |
 | BR-SUP-11 | `[SEC]` The normal route is the **client granting it**: the owner approves a time-boxed support session in-app, for a stated reason. Consent from the person whose data it is beats any internal approval. |
 | BR-SUP-12 | `[SEC]` Emergency access without prior consent requires **two named vendor staff**, a recorded reason, and **immediate notification to the owner** — not a notification afterwards, and not one buried in a monthly report. |
-| BR-SUP-13 | `[SEC]` Access is **read-only by default**. Writing to a client's data requires a separate, higher approval and a specific stated change; "we fixed it for you" without a record of what changed is not acceptable. |
+| BR-SUP-13 | `[SEC]` Access is **read-only. The vendor does not edit client data — it changes code.** See §4B.1: diagnosis may require reading; the remedy is always a deployed change, never a console edit. |
 | BR-SUP-14 | `[SEC]` Access is **time-boxed** (default 4 hours) and expires on its own. It is never open-ended, and it is not renewed silently. |
 | BR-SUP-15 | `[SEC]` Access is **scoped to one client**, never to several, and never platform-wide. |
 | BR-SUP-16 | `[SEC]` Every action taken during a session is audited **into that client's own audit log**, attributed to the vendor staff member. The client can see exactly what was looked at and when (BR-LIC-51). |
@@ -155,6 +155,32 @@ So there is a controlled path, and it is deliberately uncomfortable to use.
 | BR-SUP-20 | `[SEC]` Break-glass MUST NOT be used for anything but diagnosing a fault: not for sales, not for analytics, not for curiosity, and not to answer a question the client could answer themselves. |
 
 > **Why this is worth the friction.** A vendor that can never see data will eventually have staff working around the rule. A vendor with quiet standing access has no defensible answer when a client asks who read their books. A narrow, consented, time-boxed, client-visible path is the only version that survives both problems.
+
+### 4B.1 The vendor fixes code, not data
+
+> **`saas_admin` cannot edit a client's data. It can change the code.**
+
+This is the sharper and better version of the rule, and it is worth stating as a principle rather than a permission: **the remedy for a fault is a deployed change, never a console edit.**
+
+| ID | Rule |
+|---|---|
+| BR-SUP-30 | `[SEC]` **The vendor never edits client data ad hoc.** No console `UPDATE`, no "quick fix in the database", no support action that mutates a row. Break-glass is read-only (BR-SUP-13). |
+| BR-SUP-31 | The remedy for a defect is a **code change through the normal pipeline**: reviewed, tested, versioned, deployed. Fixing the calculation is the fix; the fault is in the software, not in the row. |
+| BR-SUP-32 | `[SEC]` Emergency changes go through **review and CI like any other**. There is no direct-to-production edit path, and an incident is not a reason to acquire one — it is when the review matters most (CLAUDE.md rule 46). |
+
+#### When data really is corrupted
+
+A code fix does not repair rows a bug already wrote. That case is real, and it has a specific answer that is emphatically not a console session:
+
+| ID | Rule |
+|---|---|
+| BR-SUP-40 | `[SEC][MONEY]` Data repair is a **reviewed, versioned migration** — code, in the repository, in a pull request, deployed like anything else. Never an ad-hoc statement. The difference is everything: a migration is reviewable before it runs, testable against a copy, recorded in git, and reproducible; an `UPDATE` typed into a console is none of those. |
+| BR-SUP-41 | `[LEGAL]` A repair states in its own text **what went wrong, which rows it touches, and why that is the correct remedy** — the same standard migration 00003 met when it had to suspend an append-only trigger to backfill a column, and did so visibly in the diff. |
+| BR-SUP-42 | `[LEGAL]` **Immutable records are not repaired even by migration.** An issued invoice is corrected by a credit note; a wrong domain event by a compensating event; an audit entry never at all (BR-IMM-01 to BR-IMM-04). A repair that rewrote history would destroy the property those records exist to provide. |
+| BR-SUP-43 | `[LEGAL]` The affected client is told what was wrong, what was repaired and when. A silent correction to someone's books is not a correction; it is a second problem. |
+| BR-SUP-44 | `[SEC]` A repair that must suspend a protection — an append-only trigger, a constraint — does so **explicitly and narrowly**, re-enables it in the same migration, and is visible in the diff. Suspending a guarantee should be a thing a reviewer sees, never a thing a script does quietly. |
+
+**Why this is the right shape.** A support engineer with a database console and good intentions is the single most dangerous actor in a system of record: fast, unreviewed, unlogged in any meaningful way, and working under pressure. Routing every change through code turns that into a pull request — slower by design, and the delay is the control.
 
 ---
 

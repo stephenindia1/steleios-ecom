@@ -72,6 +72,8 @@ Every rule has a stable ID. **Cite the ID in code comments, test names, commit m
 
 ## 6. Versioning — date based, append only
 
+28a. **The append-only law.** Once a transaction commits, what it recorded is append-only. A **fact** — something that happened — is never edited or deleted; it is corrected by recording another fact (a credit note, a compensating event, a reversing movement). **State** — something that is true now — is versioned and effective-dated, never overwritten. If a row answers "what happened" it is append-only; if it answers "what is true now" it is versioned. A fact table without database-enforced append-only is a defect, and **nobody is exempt**: not the client, not their staff, not the vendor. See [docs/02 §0](docs/02-features-and-business-rules.md).
+
 29. **Nothing that affects money or a legal document is ever updated in place.** GST rates, price lists, shipping slabs, loyalty rates, return windows, UoM factors, coupon definitions and policy documents are **effective-dated and append-only**.
 30. The value in force is resolved by **date lookup against the transaction's date**, never "the current row". Overlaps and gaps are prevented by database exclusion constraints.
 31. Transactional records snapshot the **version ID** they used, not just the value.

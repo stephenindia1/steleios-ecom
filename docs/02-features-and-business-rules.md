@@ -23,6 +23,25 @@ These apply to every rule in this document.
 | Authority | The server is the sole authority on price, tax, stock, discount and shipping. Client input proposes; the server decides. |
 | Enforcement layer | Business rules live in the **service layer**. Handlers validate shape; services enforce meaning. |
 
+### The append-only law
+
+> **Once a transaction commits, what it recorded is append-only.** A fact that happened is never edited and never deleted. It is corrected by recording another fact.
+
+This is the organising principle behind the document trail, the ledgers, the audit log and the event stream. Two categories, and the distinction is what makes the rule workable rather than absolutist:
+
+| | Category | Rule | Examples |
+|---|---|---|---|
+| **Facts** | Something **happened**, at a time, and cannot un-happen | **Append-only.** No `UPDATE`, no `DELETE`, enforced by the database | Invoices and every document (BR-DOC-03) · audit log (BR-ADM-05) · domain events (EVT-008) · stock movements (BR-INV-10) · payment and refund records (BR-CPM-01, BR-RFD-01) · client acceptances (BR-ACP-03) |
+| **State** | Something **is**, right now, and legitimately changes | **Versioned**, effective-dated, with history retained. The old value is superseded, never overwritten | Prices · GST rates (BR-TAX-01) · supplier details (BR-ACP-18) · product records · stock levels · policy documents (BR-VER-04) |
+
+| ID | Rule |
+|---|---|
+| BR-APO-01 | `[LEGAL][MONEY]` A committed fact is **never** mutated. Corrections are new facts that reference the original: a credit note against an invoice, a compensating event, a reversing stock movement. |
+| BR-APO-02 | `[SEC]` Append-only is enforced by the **database**, in two independent layers — triggers that refuse the operation, and privileges revoked from the application role so it is rejected before a trigger runs. Application code being wrong is not enough to defeat it (BR-IMM-05). |
+| BR-APO-03 | `[LEGAL]` State changes are versioned rather than overwritten, and every transactional record **snapshots the version it used** (BR-VER-03). That is what lets an invoice from two years ago reprint identically while today's price is different. |
+| BR-APO-04 | `[SEC]` The distinction is not a matter of judgement per table. If a row answers *"what happened"* it is append-only; if it answers *"what is true now"* it is versioned state. A new table declares which it is, and a fact table without append-only enforcement is a defect. |
+| BR-APO-05 | `[SEC]` **Nobody is exempt** — not the client, not their staff, not the vendor, not a support session. The only path that may touch an immutable row is a reviewed migration, which must suspend the protection explicitly and visibly and re-enable it in the same change (BR-SUP-44). |
+
 **Rule severity tags used below**
 
 - `[MONEY]` — a defect here causes financial loss or an incorrect invoice.
