@@ -91,9 +91,18 @@ func (rt *Router) chain(p policy.Policy) []func(http.Handler) http.Handler {
 	if !p.Ownership.IsZero() {
 		mw = append(mw, rt.requireOwnership(p))
 	}
-	// 15. Actor rate limit. Needs the identity resolved above.
+	// 15. Re-authentication, AFTER the permission check, and the order is
+	//     load-bearing. A person who may not perform this action at all is told
+	//     so; asking them for their password first would both waste their time
+	//     and confirm that the action exists and that they are one grant away
+	//     from it. Only someone who may do it is asked to prove they are still
+	//     the person who signed in (BR-ADM-07, SEC-12).
+	if p.Reauth {
+		mw = append(mw, rt.requireReauth(p))
+	}
+	// 16. Actor rate limit. Needs the identity resolved above.
 	mw = append(mw, rt.rateLimitActor(p))
-	// 16. Idempotency, last, so a replay short-circuits the handler only after
+	// 17. Idempotency, last, so a replay short-circuits the handler only after
 	//     every security check has passed (BR-CHK-02).
 	if p.Idempotent {
 		mw = append(mw, rt.idempotency(p))
@@ -541,6 +550,35 @@ func (rt *Router) requireAuth(p policy.Policy) func(http.Handler) http.Handler {
 				rt.log(r).Warn("authentication required",
 					"policy", p.Name, "route", routePattern(r), "actor_type", string(actor.Type))
 				writeError(w, requestID, FromError(err))
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// requireReauth enforces that the actor proved their password recently.
+//
+// This is the control that stands between a console left open on a counter and
+// a refund, a GST rate change, a role grant or a client being provisioned
+// (BR-ADM-07). It is a SECOND factor in time rather than in kind: the session is
+// still valid, but the person must show they are still the one holding it.
+//
+// It was declared on six policies and enforced by nothing until this middleware
+// existed — the Reauth field was a struct tag that read like a control. Anything
+// that can be believed without being true is worse than an absence.
+func (rt *Router) requireReauth(p policy.Policy) func(http.Handler) http.Handler {
+	window := rt.deps.Cfg.Security.ReauthWindow
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			actor := actorFrom(r.Context())
+			requestID, _ := r.Context().Value(ctxKeyRequestID).(string)
+
+			if !actor.ReauthedWithin(rt.deps.Clock.Now(), window) {
+				rt.log(r).Warn("re-authentication required",
+					"policy", p.Name, "route", routePattern(r), "actor_id", actor.ID)
+				writeError(w, requestID, ReauthRequired(window))
 				return
 			}
 			next.ServeHTTP(w, r)

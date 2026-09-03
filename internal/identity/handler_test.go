@@ -57,7 +57,8 @@ func newHTTPFixture(t *testing.T) httpFixture {
 			RequestTimeout: 5 * time.Second,
 		},
 		Security: config.Security{
-			HSTSMaxAge: time.Hour,
+			HSTSMaxAge:   time.Hour,
+			ReauthWindow: 15 * time.Minute,
 			// Secure is off in the test config because httptest speaks plain
 			// HTTP; production config validation refuses to start without it.
 			CookieSecure: false,
@@ -77,7 +78,8 @@ func newHTTPFixture(t *testing.T) httpFixture {
 	}
 
 	identity.Mount(rt.Group(""),
-		identity.NewHandler(f.svc, httpx.NewCookieBuilder(cfg), time.Hour, log))
+		identity.NewHandler(f.svc, httpx.NewCookieBuilder(cfg), time.Hour,
+			cfg.Security.ReauthWindow, log))
 
 	return httpFixture{fixture: f, router: rt}
 }
@@ -837,6 +839,10 @@ func TestEveryIdentityRouteCarriesTheExpectedPolicy(t *testing.T) {
 		"POST /api/v1/auth/password":          policy.SignedIn.Name,
 		"POST /api/v1/auth/logout":            policy.SignedIn.Name,
 		"POST /api/v1/auth/logout-everywhere": policy.SignedIn.Name,
+		// SignedIn and not a Reauth policy, deliberately: this is how a person
+		// EARNS re-authentication, so gating it behind one would be a loop
+		// nobody could enter.
+		"POST /api/v1/auth/reauth": policy.SignedIn.Name,
 	}
 
 	got := map[string]string{}
@@ -884,5 +890,65 @@ func TestOnlyTheHandshakeAndSignInArePublic(t *testing.T) {
 		if public[i] != want[i] {
 			t.Errorf("public route %d = %q, want %q", i, public[i], want[i])
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Re-authentication
+// ---------------------------------------------------------------------------
+
+func TestReauthRequiresTheRightPassword(t *testing.T) {
+	t.Parallel()
+
+	f := newHTTPFixture(t)
+	f.user(t, "asha@shop.example", "correct horse battery", shopA)
+
+	c := f.client(t)
+	c.signIn("asha@shop.example", "correct horse battery")
+
+	rec := c.do(http.MethodPost, "/api/v1/auth/reauth", map[string]string{"password": "not it"})
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("wrong password = %d, want 422 (%s)", rec.Code, rec.Body.String())
+	}
+
+	rec = c.do(http.MethodPost, "/api/v1/auth/reauth", map[string]string{"password": "correct horse battery"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("right password = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestAWrongReauthPasswordCountsTowardsLockout stops this endpoint being an
+// unlimited password oracle for anyone who picks up an unlocked console.
+func TestAWrongReauthPasswordCountsTowardsLockout(t *testing.T) {
+	t.Parallel()
+
+	f := newHTTPFixture(t)
+	f.user(t, "asha@shop.example", "correct horse battery", shopA)
+
+	c := f.client(t)
+	c.signIn("asha@shop.example", "correct horse battery")
+
+	before := f.repo.failedLogins
+	c.do(http.MethodPost, "/api/v1/auth/reauth", map[string]string{"password": "not it"})
+	if f.repo.failedLogins == before {
+		t.Fatal("a wrong re-authentication password was not counted; the endpoint is an unlimited oracle")
+	}
+}
+
+// TestReauthClearsTheFailureCounter: the person just proved the password, so
+// counting earlier mistypes against them would lock them out for succeeding.
+func TestReauthClearsTheFailureCounter(t *testing.T) {
+	t.Parallel()
+
+	f := newHTTPFixture(t)
+	f.user(t, "asha@shop.example", "correct horse battery", shopA)
+
+	c := f.client(t)
+	c.signIn("asha@shop.example", "correct horse battery")
+
+	before := f.repo.successes
+	c.do(http.MethodPost, "/api/v1/auth/reauth", map[string]string{"password": "correct horse battery"})
+	if f.repo.successes == before {
+		t.Error("a successful re-authentication did not clear the failure counter")
 	}
 }

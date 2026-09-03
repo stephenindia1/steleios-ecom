@@ -261,7 +261,7 @@ func TestStateChangingPoliciesRequireCSRF(t *testing.T) {
 	// validated separately (BR-PAY-06).
 	readOnly := map[string]bool{
 		"public": true, "public.cached": true, "probe": true,
-		"customer.order.read": true, "admin.read": true,
+		"customer.order.read": true, "admin.read": true, "platform.read": true,
 		// A preflight changes nothing: it asks whether a request WOULD be
 		// allowed and the answer is a set of headers. Requiring CSRF on it would
 		// make every cross-origin request impossible, since the browser sends no

@@ -21,12 +21,15 @@ type Handler struct {
 	svc     *Service
 	cookies httpx.CookieBuilder
 	ttl     time.Duration
-	log     *slog.Logger
+	// reauthWindow is reported to the client so a console can show how long a
+	// password confirmation lasts. The middleware is what enforces it.
+	reauthWindow time.Duration
+	log          *slog.Logger
 }
 
 // NewHandler builds the handler.
-func NewHandler(svc *Service, cookies httpx.CookieBuilder, ttl time.Duration, log *slog.Logger) *Handler {
-	return &Handler{svc: svc, cookies: cookies, ttl: ttl, log: log}
+func NewHandler(svc *Service, cookies httpx.CookieBuilder, ttl, reauthWindow time.Duration, log *slog.Logger) *Handler {
+	return &Handler{svc: svc, cookies: cookies, ttl: ttl, reauthWindow: reauthWindow, log: log}
 }
 
 // ---------------------------------------------------------------------------
@@ -261,6 +264,48 @@ func (h *Handler) LogoutEverywhere(ctx context.Context, req *httpx.Request) (htt
 	return httpx.OK(map[string]int64{
 		"sessions_ended": count,
 	}).WithCookies(h.cookies.Clear()...), nil
+}
+
+type reauthRequest struct {
+	Password string `json:"password"`
+}
+
+func (r reauthRequest) Validate() map[string]string {
+	if r.Password == "" {
+		return map[string]string{"password": "Enter your password to confirm."}
+	}
+	return nil
+}
+
+// Reauth confirms the signed-in person's password.
+//
+// It grants a short window in which high-consequence actions are permitted
+// (BR-ADM-07). The response says when the window closes so a console can show
+// it rather than discovering it by being refused.
+func (h *Handler) Reauth(ctx context.Context, req *httpx.Request) (httpx.Response, error) {
+	var body reauthRequest
+	if err := req.Decode(&body); err != nil {
+		return httpx.Response{}, err
+	}
+
+	err := h.svc.Reauth(ctx, httpx.SessionToken(req), body.Password)
+	switch {
+	case err == nil:
+	case errors.Is(err, ErrBadPassword):
+		return httpx.Response{}, httpx.Validation(map[string]string{
+			"password": "That is not your password.",
+		})
+	case IsAuthFailure(err):
+		// Locked out, or blocked while the session was open. The session is no
+		// longer usable, so say so rather than reporting a password problem.
+		return httpx.Response{}, httpx.Unauthenticated(err)
+	default:
+		return httpx.Response{}, err
+	}
+
+	return httpx.OK(map[string]any{
+		"confirmed_for_seconds": int(h.reauthWindow.Seconds()),
+	}), nil
 }
 
 type meResponse struct {

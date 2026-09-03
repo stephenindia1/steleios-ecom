@@ -27,6 +27,7 @@ func valid() config.Config {
 		},
 		Redis:    config.Redis{Addr: "redis:6379", UseTLS: true},
 		Log:      config.Log{Level: "info", Format: "json"},
+		SMS:      config.SMS{Provider: "msg91", AuthKey: "k", SenderID: "STLEIO"},
 		Security: config.Security{CookieSecure: true},
 	}
 }
@@ -48,6 +49,10 @@ func TestValidate(t *testing.T) {
 					Postgres: config.Postgres{DSN: "postgres://localhost/dev", MinConns: 1, MaxConns: 5},
 					Redis:    config.Redis{Addr: "localhost:6379"},
 					Log:      config.Log{Level: "debug", Format: "text"},
+					// The logging sender is fine locally and refused in
+					// production, where a silent no-op would mean nobody ever
+					// receives a recovery code.
+					SMS: config.SMS{Provider: "log"},
 				}
 			},
 		},
@@ -355,5 +360,28 @@ func TestEnvironmentPredicates(t *testing.T) {
 	}
 	if err := config.Environment("").Valid(); err == nil {
 		t.Error("the empty environment should be invalid")
+	}
+}
+
+// TestProductionRefusesTheLoggingSMSSender guards the setting whose failure is
+// invisible until the worst moment.
+//
+// With SMS_PROVIDER=log nothing is delivered — the sender writes a line and
+// returns success. In production that means every recovery code, first password
+// and OTP goes nowhere, and nobody finds out until an owner who has lost their
+// email cannot get back into their business (BR-REC-11, BR-REC-14b).
+func TestProductionRefusesTheLoggingSMSSender(t *testing.T) {
+	t.Parallel()
+
+	c := valid()
+	c.Env = config.EnvProduction
+	c.SMS = config.SMS{Provider: "log"}
+
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("production accepted the logging SMS sender")
+	}
+	if !strings.Contains(err.Error(), "SMS_PROVIDER") {
+		t.Errorf("error does not name the setting: %v", err)
 	}
 }

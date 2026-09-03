@@ -340,12 +340,21 @@ The answer is not the storefront. It is **the counter and the stock**. A shop ca
 Config, structured logging, the middleware chain with policy-gated routing, PostgreSQL pool and unit of work, migrations, health and readiness, the error envelope, RBAC, CI. Multi-tenant row-level security proven with cross-tenant tests.
 *Ships: a deployable service that does nothing, correctly — with authorization, rate limiting, audit and tests already wired.*
 
-**P1 · Tenancy, identity and onboarding** — *sign-in complete; onboarding in progress*
+**P1 · Tenancy, identity and onboarding** — ✅ *complete*
 Client, shop and group provisioning. Identities, memberships, shop switching, password and phone-OTP login, sessions, the roles from docs/02 §15. Subscription state and entitlement checks.
 *Ships: a real shop can be created and its owner can sign in. Nothing to sell yet — but every later phase needs this, and building it later means retrofitting a tenant into working code.*
 
-Done: the schema through migration 00017, and `internal/identity` — sign-in with lockout and timing defence, session issue and revocation, shop selection, password change, and the session resolver every authenticated route in the system runs through. `GET /api/v1/auth/csrf`, `POST /login`, `GET /me`, `POST /shop`, `POST /password`, `POST /logout`, `POST /logout-everywhere`.
-Remaining: client registration and onboarding services, OTP for contact changes, subscription state and entitlement checks.
+Done: the schema through migration 00020, and three things.
+
+`internal/identity` — sign-in with lockout and timing defence, sessions, shop selection, password change, re-authentication, and the session resolver every authenticated route runs through.
+
+`internal/onboarding` — the vendor console. A `saas_admin` registers a client, records its owners with their KYC, provisions its shops, issues the owner's first login, and confirms the business identity, after which it is permanent. `cmd/bootstrap` creates the first vendor administrator, because nothing can create it over HTTP.
+
+`internal/platform/sms` — MSG91, behind a `Sender` interface. SMS is the only channel treated as proof, because recovery and contact changes assume the email may be lost (BR-REC-11).
+
+Vendor staff live in `platform_users`, never in a client's `staff` table, and the two worlds of roles are now kept apart by a composite foreign key rather than by review (migration 00019).
+
+Remaining for P1: OTP for self-service contact changes, and subscription state and entitlement checks (docs/09).
 
 **P2 · Catalog, UoM and stock**
 Products, variants, options, media pipeline to object storage, categories, typed attributes with allergens and provenance. Base and sale units with integer conversion. Suppliers, goods receipts, **batches with expiry**, and the FEFO allocation statement.

@@ -1079,3 +1079,122 @@ func TestPreflightIsNotInTheRouteTable(t *testing.T) {
 		t.Errorf("route table has %d entries, want the 2 real routes", len(rt.Routes()))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Re-authentication
+// ---------------------------------------------------------------------------
+
+// TestReauthIsEnforcedNotJustDeclared is the regression test for a control that
+// existed only as a struct field.
+//
+// Six policies carried Reauth: true — refunds, GST rates, pricing, role
+// management, contact exports, client provisioning — and the middleware chain
+// had no step that read it. Every one of them read like a control in the
+// catalogue and enforced nothing. A field that can be believed without being
+// true is worse than its absence, because it stops anyone looking.
+func TestReauthIsEnforcedNotJustDeclared(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	stale := now.Add(-time.Hour)
+	fresh := now.Add(-time.Minute)
+
+	cases := []struct {
+		name       string
+		reauthedAt *time.Time
+		want       int
+	}{
+		{"never re-authenticated", nil, http.StatusForbidden},
+		{"re-authenticated an hour ago", &stale, http.StatusForbidden},
+		{"re-authenticated a minute ago", &fresh, http.StatusOK},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			d := testDeps()
+			d.Cfg.Security.ReauthWindow = 15 * time.Minute
+			d.Clock = clock.NewFake(now)
+			d.Sessions = fakeSessions{actor: authz.Actor{
+				ID:         "staff-1",
+				Type:       authz.ActorAdmin,
+				Roles:      []authz.Role{authz.RoleOwner},
+				ReauthedAt: tc.reauthedAt,
+			}}
+
+			rt := mustRouter(t, d)
+			// AdminFinance is the sharpest example: it is where money leaves.
+			rt.Group("/api/v1").POST("/refunds", policy.AdminFinance, okHandler(nil))
+
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/refunds", strings.NewReader("{}"))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-CSRF-Token", "t")
+			req.Header.Set("Idempotency-Key", "k")
+			req.AddCookie(&http.Cookie{Name: "csrf_token", Value: "t"})
+			// loadSession only consults the resolver when a session cookie is
+			// present, so without this the actor is a guest and the refusal is
+			// a 401 about authentication rather than the control under test.
+			req.AddCookie(&http.Cookie{Name: "steleios_session", Value: "s"})
+
+			rec := do(rt, req)
+			if rec.Code != tc.want {
+				t.Fatalf("status %d, want %d (%s)", rec.Code, tc.want, rec.Body.String())
+			}
+			if tc.want != http.StatusForbidden {
+				return
+			}
+
+			// The code must be distinct from a plain denial: the client has to
+			// know to prompt for a password rather than show "no access",
+			// which is both wrong and a dead end for someone who does have it.
+			body := errorBody(t, rec)
+			if got := body["code"]; got != string(httpx.CodeReauthRequired) {
+				t.Errorf("error code = %v, want %q", got, httpx.CodeReauthRequired)
+			}
+		})
+	}
+}
+
+// TestPermissionIsCheckedBeforeReauth: a person who may not do this at all is
+// told so, rather than asked for their password first. The prompt would
+// otherwise waste their time AND confirm that the action exists and that they
+// are one grant away from it (SEC-12).
+//
+// Written before the middleware was ordered correctly, and it caught the
+// mistake: the chain asked for the password first while the comment beside it
+// argued for the opposite.
+func TestPermissionIsCheckedBeforeReauth(t *testing.T) {
+	t.Parallel()
+
+	d := testDeps()
+	d.Cfg.Security.ReauthWindow = 15 * time.Minute
+	// A counter operator holds neither refund:write nor a recent password
+	// confirmation. They must be refused for the permission, not the password.
+	d.Sessions = fakeSessions{actor: authz.Actor{
+		ID:    "till-1",
+		Type:  authz.ActorAdmin,
+		Roles: []authz.Role{authz.RoleCounterSales},
+	}}
+
+	rt := mustRouter(t, d)
+	rt.Group("/api/v1").POST("/refunds", policy.AdminFinance, okHandler(nil))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/refunds", strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", "t")
+	req.Header.Set("Idempotency-Key", "k")
+	req.AddCookie(&http.Cookie{Name: "csrf_token", Value: "t"})
+	req.AddCookie(&http.Cookie{Name: "steleios_session", Value: "s"})
+
+	rec := do(rt, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status %d, want 403", rec.Code)
+	}
+
+	// Both are 403; the CODE is what differs and what the client acts on.
+	body := errorBody(t, rec)
+	if got := body["code"]; got == string(httpx.CodeReauthRequired) {
+		t.Error("a counter operator was asked to confirm their password for an action they may never perform")
+	}
+}

@@ -49,9 +49,10 @@ func New(d *module.Deps) (*Mod, error) {
 	}
 
 	return &Mod{
-		svc:     svc,
-		handler: NewHandler(svc, httpx.NewCookieBuilder(d.Cfg), ttl, d.Log),
-		store:   store,
+		svc: svc,
+		handler: NewHandler(svc, httpx.NewCookieBuilder(d.Cfg), ttl,
+			d.Cfg.Security.ReauthWindow, d.Log),
+		store: store,
 	}, nil
 }
 
@@ -90,6 +91,11 @@ func Mount(g *httpx.Group, h *Handler) {
 		auth.POST("/password", policy.SignedIn, h.ChangePassword)
 		auth.POST("/logout", policy.SignedIn, h.Logout)
 		auth.POST("/logout-everywhere", policy.SignedIn, h.LogoutEverywhere)
+
+		// Deliberately SignedIn and not a Reauth policy: this route is how a
+		// person EARNS re-authentication, so requiring it here would be a
+		// closed loop nobody could enter.
+		auth.POST("/reauth", policy.SignedIn, h.Reauth)
 	})
 }
 

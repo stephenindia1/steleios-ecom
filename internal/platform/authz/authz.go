@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 )
 
 // Errors returned by an Enforcer. Callers match with errors.Is.
@@ -273,6 +274,24 @@ type Actor struct {
 	// SessionFingerprint is a hashed reference to the session, safe to log
 	// (SES-010).
 	SessionFingerprint string
+
+	// ReauthedAt is when this person last proved their password, or nil if they
+	// have not since signing in. High-consequence actions require it to be
+	// recent, so a console left open on a counter is not enough to issue a
+	// refund or change a GST rate (BR-ADM-07).
+	ReauthedAt *time.Time
+}
+
+// ReauthedWithin reports whether the actor re-authenticated inside the window.
+//
+// Fails closed on every uncertainty: no timestamp, a zero window, or a clock
+// that has gone backwards all answer false. The cost of a false negative is one
+// password prompt; the cost of a false positive is an unverified refund.
+func (a Actor) ReauthedWithin(now time.Time, window time.Duration) bool {
+	if a.ReauthedAt == nil || window <= 0 {
+		return false
+	}
+	return !a.ReauthedAt.After(now) && now.Sub(*a.ReauthedAt) <= window
 }
 
 // IsAuthenticated reports whether an identified principal is present. A guest is

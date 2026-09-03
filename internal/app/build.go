@@ -16,9 +16,11 @@ import (
 	"github.com/hibiken/asynq"
 	"github.com/stephenindia1/steleios-ecom/internal/health"
 	"github.com/stephenindia1/steleios-ecom/internal/identity"
+	"github.com/stephenindia1/steleios-ecom/internal/onboarding"
 	"github.com/stephenindia1/steleios-ecom/internal/platform/httpx"
 	"github.com/stephenindia1/steleios-ecom/internal/platform/module"
 	"github.com/stephenindia1/steleios-ecom/internal/platform/redis"
+	"github.com/stephenindia1/steleios-ecom/internal/platform/sms"
 )
 
 // Build assembles every module from the shared container.
@@ -43,6 +45,20 @@ func Build(d *module.Deps) (*Graph, error) {
 		return nil, err
 	}
 
+	// SMS is a shared collaborator rather than a module: several modules send
+	// through it, and it owns no data. Chosen by configuration, which refuses
+	// the logging sender in production — a silent no-op there would mean every
+	// recovery code going nowhere (BR-REC-11).
+	sender, err := smsSender(d)
+	if err != nil {
+		return nil, err
+	}
+
+	onboardingMod, err := onboarding.New(d, sender)
+	if err != nil {
+		return nil, err
+	}
+
 	// Phase 2 onwards, domain modules are wired here in dependency order:
 	//
 	//   cat, err := catalog.New(d)
@@ -54,9 +70,28 @@ func Build(d *module.Deps) (*Graph, error) {
 	// a cycle is a build error rather than a runtime surprise (MOD-07).
 
 	return &Graph{
-		Modules:  []module.Module{healthMod, identityMod},
+		Modules:  []module.Module{healthMod, identityMod, onboardingMod},
 		Sessions: identityMod.Service(),
 	}, nil
+}
+
+// smsSender builds the configured SMS provider.
+//
+// Config validation has already refused the logging sender in production, so
+// this cannot silently produce a no-op where one would matter.
+func smsSender(d *module.Deps) (sms.Sender, error) {
+	switch d.Cfg.SMS.Provider {
+	case "msg91":
+		return sms.NewMSG91(d.Cfg.SMS, d.Log)
+	case "log":
+		d.Log.Warn("SMS is not configured: messages will be logged and not delivered",
+			"provider", "log")
+		return sms.NewLog(d.Log), nil
+	default:
+		// Unreachable: config.Validate checks the value. Fails closed anyway
+		// rather than returning a nil sender that panics on first use.
+		return nil, fmt.Errorf("app: unknown SMS provider %q", d.Cfg.SMS.Provider)
+	}
 }
 
 // Graph is the assembled application.

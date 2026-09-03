@@ -30,6 +30,8 @@ type Repository interface {
 
 	RecordFailedLogin(ctx context.Context, id uuid.UUID, lockUntil *time.Time) error
 	RecordSuccessfulLogin(ctx context.Context, id uuid.UUID, at time.Time) error
+	// RecordReauth stamps a fresh password confirmation (BR-ADM-07).
+	RecordReauth(ctx context.Context, id uuid.UUID, at time.Time) error
 	UpdatePassword(ctx context.Context, id uuid.UUID, hash string, at time.Time) error
 }
 
@@ -229,6 +231,23 @@ func (r *pgRepository) RecordSuccessfulLogin(ctx context.Context, id uuid.UUID, 
 	})
 	if err != nil {
 		return fmt.Errorf("identity: record login: %w", err)
+	}
+	return nil
+}
+
+// RecordReauth stamps the moment the person last proved their password.
+//
+// Its own column rather than reusing last_login_at: signing in is not the same
+// event as confirming a password mid-session, and conflating them would let a
+// morning sign-in authorise an afternoon refund.
+func (r *pgRepository) RecordReauth(ctx context.Context, id uuid.UUID, at time.Time) error {
+	err := r.uow.DoSystem(ctx, func(rep postgres.Repos) error {
+		_, err := rep.Querier().Exec(ctx,
+			`update identities set last_reauth_at = $2, updated_at = $2 where id = $1`, id, at)
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("identity: record reauth: %w", err)
 	}
 	return nil
 }

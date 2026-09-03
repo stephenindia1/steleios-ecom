@@ -180,6 +180,38 @@ var (
 		RateLimit: ratelimit.PerActor(120, time.Minute),
 	}
 
+	// --- Platform: the vendor operating the SaaS ----------------------------
+	//
+	// These two are the ONLY policies carrying a platform action. A route
+	// registered with either of them is the vendor acting on its own business —
+	// which clients exist, their shops, their subscriptions — and never on a
+	// client's business data, which no platform role can reach at all
+	// (BR-ADM-14, and enforced in row-level security by migration 00020).
+
+	// PlatformRead is vendor-side reading: the client list, one client's
+	// onboarding record, subscription state.
+	PlatformRead = Policy{
+		Name:       "platform.read",
+		Auth:       AuthAdmin,
+		Permission: authz.ActionClientRead,
+		RateLimit:  ratelimit.PerActor(600, time.Minute),
+	}
+
+	// PlatformManage is vendor-side provisioning: onboarding a business,
+	// creating its shops, issuing its first login, confirming its identity.
+	//
+	// Reauth because these actions create the credentials to a business's
+	// records, and a vendor console left open on a desk should not be enough
+	// (BR-ADM-07).
+	PlatformManage = Policy{
+		Name:       "platform.manage",
+		Auth:       AuthAdmin,
+		Permission: authz.ActionClientManage,
+		CSRF:       true,
+		Reauth:     true,
+		RateLimit:  ratelimit.PerActor(120, time.Minute),
+	}
+
 	// --- Staff -------------------------------------------------------------
 
 	// AdminRead is any staff read: order lookup, customer lookup, reports.
@@ -312,6 +344,7 @@ func All() []Policy {
 		GuestOrSession, CustomerSession,
 		CustomerOrderRead, CustomerOrderWrite, CustomerAddressWrite,
 		Checkout, ProviderWebhook,
+		PlatformRead, PlatformManage,
 		AdminRead, AdminOps, AdminInventory, AdminCatalog, AdminPricing,
 		AdminFinance, AdminTax, AdminPurchasing, AdminMarketing,
 		AdminExport, AdminUsers,

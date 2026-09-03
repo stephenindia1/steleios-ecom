@@ -62,6 +62,7 @@ type Config struct {
 
 	HTTP     HTTP
 	Postgres Postgres
+	SMS      SMS
 	Redis    Redis
 	Log      Log
 	Security Security
@@ -79,6 +80,28 @@ type HTTP struct {
 	AllowedOrigins  []string // strict CORS allowlist
 	RequestTimeout  time.Duration
 	ReadHeaderLimit time.Duration
+}
+
+// SMS configures outbound SMS.
+//
+// SMS is the channel Steleios treats as proof — recovery, contact changes and
+// first logins all verify against the registered mobile, because those flows
+// assume the email may be lost (BR-REC-11). Provider "msg91" is the Indian
+// gateway; "log" writes what would have been sent and is for development only.
+//
+// The template ids are DLT registrations. Under TRAI's rules a transactional
+// SMS must match a template registered in advance or the carrier drops it
+// silently and still bills for it, so a missing id is a startup failure rather
+// than a message nobody receives.
+type SMS struct {
+	Provider string
+	AuthKey  string
+	SenderID string
+
+	TemplateFirstLogin     string
+	TemplateOTP            string
+	TemplateRecoveryIssued string
+	TemplateEmailChanged   string
 }
 
 // Postgres configures the database pool.
@@ -124,9 +147,13 @@ type Log struct {
 type Security struct {
 	SessionTTL      time.Duration
 	AdminSessionTTL time.Duration
-	CookieDomain    string
-	CookieSecure    bool
-	HSTSMaxAge      time.Duration
+	// ReauthWindow is how long a password confirmation stays valid for
+	// high-consequence actions (BR-ADM-07). Short by design: it is the gap
+	// between a console left unattended and a refund.
+	ReauthWindow time.Duration
+	CookieDomain string
+	CookieSecure bool
+	HSTSMaxAge   time.Duration
 }
 
 // Load reads configuration from the environment and validates it.
@@ -186,9 +213,25 @@ func Load() (Config, error) {
 			Format: get("LOG_FORMAT", "json"),
 		},
 
+		SMS: SMS{
+			// "log" by default so a developer can run the whole onboarding flow
+			// without an account. Validate below refuses that default in
+			// production, where a silent no-op would mean nobody ever receives
+			// their recovery code.
+			Provider: get("SMS_PROVIDER", "log"),
+			AuthKey:  get("MSG91_AUTH_KEY", ""),
+			SenderID: get("MSG91_SENDER_ID", ""),
+
+			TemplateFirstLogin:     get("MSG91_TEMPLATE_FIRST_LOGIN", ""),
+			TemplateOTP:            get("MSG91_TEMPLATE_OTP", ""),
+			TemplateRecoveryIssued: get("MSG91_TEMPLATE_RECOVERY_ISSUED", ""),
+			TemplateEmailChanged:   get("MSG91_TEMPLATE_EMAIL_CHANGED", ""),
+		},
+
 		Security: Security{
 			SessionTTL:      duration("SESSION_TTL", 30*24*time.Hour, &errs),    // SES-004
 			AdminSessionTTL: duration("ADMIN_SESSION_TTL", 12*time.Hour, &errs), // BR-ADM-07
+			ReauthWindow:    duration("REAUTH_WINDOW", 15*time.Minute, &errs),   // BR-ADM-07
 			CookieDomain:    get("COOKIE_DOMAIN", ""),
 			CookieSecure:    boolean("COOKIE_SECURE", true, &errs),
 			HSTSMaxAge:      duration("HSTS_MAX_AGE", 365*24*time.Hour, &errs),
@@ -211,6 +254,9 @@ func (c Config) Validate() error {
 
 	if err := c.Env.Valid(); err != nil {
 		errs = append(errs, err)
+	}
+	if c.SMS.Provider != "log" && c.SMS.Provider != "msg91" {
+		errs = append(errs, fmt.Errorf("SMS_PROVIDER %q is not one of log|msg91", c.SMS.Provider))
 	}
 	if c.Postgres.DSN == "" {
 		errs = append(errs, errors.New("POSTGRES_DSN is required"))
@@ -246,6 +292,14 @@ func (c Config) Validate() error {
 		if len(c.HTTP.AllowedOrigins) == 0 {
 			errs = append(errs, errors.New("HTTP_ALLOWED_ORIGINS must be set in production"))
 		}
+		// The logging sender writes a line and delivers nothing. In production
+		// that would mean every recovery code, first password and OTP silently
+		// going nowhere, and the failure only surfacing when an owner who has
+		// lost their email cannot get back in — the worst possible moment
+		// (BR-REC-11, BR-REC-14b).
+		if c.SMS.Provider == "log" {
+			errs = append(errs, errors.New("SMS_PROVIDER must be a real provider in production: recovery and contact changes are verified by SMS and cannot fall back to email"))
+		}
 		for _, o := range c.HTTP.AllowedOrigins {
 			if o == "*" {
 				errs = append(errs, errors.New(`HTTP_ALLOWED_ORIGINS must not contain "*" in production`))
@@ -272,6 +326,9 @@ func (c Config) Redacted() map[string]any {
 		"http_allowed_origins":  c.HTTP.AllowedOrigins,
 		"postgres_dsn":          redactDSN(c.Postgres.DSN),
 		"postgres_admin_dsn":    redactDSN(c.Postgres.AdminDSN),
+		"sms_provider":          c.SMS.Provider,
+		"msg91_auth_key":        secretPresence(c.SMS.AuthKey),
+		"msg91_sender_id":       c.SMS.SenderID,
 		"postgres_max_conns":    c.Postgres.MaxConns,
 		"postgres_stmt_timeout": c.Postgres.StatementTimeout.String(),
 		"redis_addr":            c.Redis.Addr,
@@ -282,6 +339,7 @@ func (c Config) Redacted() map[string]any {
 		"log_format":            c.Log.Format,
 		"session_ttl":           c.Security.SessionTTL.String(),
 		"admin_session_ttl":     c.Security.AdminSessionTTL.String(),
+		"reauth_window":         c.Security.ReauthWindow.String(),
 		"cookie_secure":         c.Security.CookieSecure,
 	}
 }

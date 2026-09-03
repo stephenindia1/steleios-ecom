@@ -327,3 +327,80 @@ func TestVerifyIsIndependentOfHasherCost(t *testing.T) {
 		t.Errorf("weak hasher could not verify a strong hash: %v", err)
 	}
 }
+
+func TestGenerateProducesUsablePassphrases(t *testing.T) {
+	t.Parallel()
+
+	got, err := passwd.Generate(4)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	words := strings.Split(got, "-")
+	if len(words) != 4 {
+		t.Fatalf("Generate(4) = %q, want 4 hyphenated words", got)
+	}
+	for _, w := range words {
+		if w == "" {
+			t.Fatalf("Generate produced an empty word in %q", got)
+		}
+	}
+
+	// It must satisfy the policy it will be checked against, or the account it
+	// is issued for could not change to anything — including away from it.
+	if err := passwd.CheckPolicy(got); err != nil {
+		t.Errorf("a generated password fails our own policy: %v (%q)", err, got)
+	}
+}
+
+func TestGenerateRefusesTooFewWords(t *testing.T) {
+	t.Parallel()
+
+	for _, n := range []int{0, 1, 2, -1} {
+		if _, err := passwd.Generate(n); err == nil {
+			t.Errorf("Generate(%d) was accepted; too few words is not enough entropy", n)
+		}
+	}
+}
+
+// TestGenerateDoesNotRepeat is the property that a constant would violate while
+// passing every other test here.
+func TestGenerateDoesNotRepeat(t *testing.T) {
+	t.Parallel()
+
+	seen := map[string]bool{}
+	for range 200 {
+		got, err := passwd.Generate(4)
+		if err != nil {
+			t.Fatalf("Generate: %v", err)
+		}
+		if seen[got] {
+			t.Fatalf("Generate repeated %q within 200 draws", got)
+		}
+		seen[got] = true
+	}
+}
+
+// TestPolicyReasonOnlySpeaksForPolicyErrors.
+//
+// It is the one path by which an error string reaches a person, so it must be
+// impossible to push an arbitrary internal message through it (GO-028).
+func TestPolicyReasonOnlySpeaksForPolicyErrors(t *testing.T) {
+	t.Parallel()
+
+	if got := passwd.PolicyReason(errors.New("pq: connection refused to db-primary-3")); got != "" {
+		t.Fatalf("PolicyReason relayed a non-policy error: %q", got)
+	}
+
+	err := passwd.CheckPolicy("short")
+	got := passwd.PolicyReason(err)
+	if got == "" {
+		t.Fatal("PolicyReason said nothing about a real policy failure")
+	}
+	if strings.Contains(got, "passwd:") {
+		t.Errorf("PolicyReason leaked the package prefix: %q", got)
+	}
+	if !strings.HasSuffix(got, ".") {
+		t.Errorf("PolicyReason is not a sentence: %q", got)
+	}
+}

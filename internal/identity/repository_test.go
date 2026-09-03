@@ -474,3 +474,57 @@ func TestPlatformRolesOfReadsVendorStaffOnly(t *testing.T) {
 		t.Errorf("vendor staff hold %d shop memberships", len(shops))
 	}
 }
+
+// TestThePlatformFlagGrantsNothingOnBusinessTables is the boundary that makes
+// the vendor's cross-client visibility safe to have at all.
+//
+// postgres.ReadPlatform sets app.platform, and migration 00020 adds that flag to
+// the policies of the tables naming WHICH BUSINESSES EXIST — clients, shops,
+// groups, the onboarding records. It is deliberately absent from every table
+// holding a business's own data.
+//
+// So the vendor, with the flag set, sees which shops exist and not one row of
+// what they sell, owe or took today. That is BR-ADM-14 expressed in row-level
+// security rather than only in the grant table: even a vendor session that
+// somehow passed a permission check would find the rows invisible.
+//
+// If this test fails because a business table became readable, the fix is to
+// remove current_is_platform() from that table's policy — never to update the
+// expectation here.
+func TestThePlatformFlagGrantsNothingOnBusinessTables(t *testing.T) {
+	pool := repoPool(t)
+	ctx := context.Background()
+	seed(t, authz.RoleManager, "platvis") // guarantees there are rows to be hidden
+
+	count := func(read func(context.Context, func(postgres.Repos) error) error, table string) int {
+		t.Helper()
+		var n int
+		err := read(ctx, func(r postgres.Repos) error {
+			return r.Querier().QueryRow(ctx, "select count(*) from "+table).Scan(&n)
+		})
+		if err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		return n
+	}
+
+	// The vendor-scoped tables: invisible without the flag, visible with it.
+	// Both halves matter — the second proves the flag works, the first proves it
+	// is doing the work rather than the policy being open anyway.
+	for _, table := range []string{"clients", "tenants"} {
+		if n := count(pool.ReadSystem, table); n != 0 {
+			t.Errorf("%s returned %d rows with no scope at all; the tenant policy is not doing its job", table, n)
+		}
+		if n := count(pool.ReadPlatform, table); n == 0 {
+			t.Errorf("%s returned nothing to the vendor; BR-ADM-15 requires they can see which clients exist", table)
+		}
+	}
+
+	// Business data. `staff` is the one that would hurt most: it names every
+	// employee of every client, and the vendor has no business knowing them.
+	for _, table := range []string{"staff", "staff_role_assignments"} {
+		if n := count(pool.ReadPlatform, table); n != 0 {
+			t.Errorf("the platform flag exposed %d rows of %s; the vendor must see no business data (BR-ADM-14)", n, table)
+		}
+	}
+}

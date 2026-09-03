@@ -38,6 +38,7 @@ Every rule has a stable ID. **Cite the ID in code comments, test names, commit m
 7. **Never log secrets or PII.** Redaction is centralised in `platform/logging.Redact`.
 8. Constant-time comparison (`hmac.Equal`, `crypto/subtle`) for every secret, token and signature.
 9. Flag security-relevant decisions explicitly in the PR so they get reviewed.
+9a. **A declared control MUST be an enforced control.** A policy field, a struct tag or a comment that reads like a security measure and is wired to nothing is worse than its absence, because it stops anyone looking. `Reauth` sat on six policies — refunds, GST rates, pricing, role grants, exports, client provisioning — enforced by no middleware at all. Every field in `policy.Policy` has a test proving the chain acts on it.
 
 ## 2. Money
 
@@ -71,6 +72,8 @@ Every rule has a stable ID. **Cite the ID in code comments, test names, commit m
 28. Redis is a cache and coordination store. Its loss MUST degrade the system, never corrupt it.
 28b. **A read on the system path MUST NOT touch a tenant-scoped table.** With no tenant set `current_tenant_id()` is NULL, so every policy matches nothing and the query silently returns zero rows — a fail-closed design working correctly against a question it cannot answer. The two operations that genuinely precede tenancy, resolving an identity and listing its memberships, are the only exceptions, and each is explicitly provided for in the schema (migrations 00016, 00017). Anything else that needs this is asking the wrong question, or belongs after a shop is chosen.
 28c. **Migrations run privileged; the application never does.** `cmd/migrate` uses `POSTGRES_ADMIN_DSN` and refuses to start without it. The application role holds no DDL and no `BYPASSRLS` — a superuser is exempt from row-level security entirely, so an application running as one has no isolation at all, and `postgres.assertRLSApplies` refuses to start in that state.
+28e. **The vendor sees which businesses exist, never what they do.** `postgres.DoPlatform`/`ReadPlatform` set a transaction-local `app.platform` flag, and migration 00020 adds that flag ONLY to the policies of the tables naming which businesses exist — clients, shops, groups, the onboarding records. It is deliberately absent from every table holding a business's own data, so a vendor session sees no order, product, customer or invoice even if a permission check were somehow passed. When a business-data table is added it gets the plain `tenant_id = current_tenant_id()` policy and nothing else. `grep DoPlatform` is the complete list of code that can see across clients.
+
 28d. A `security definer` function is a deliberate, reviewable hole in row-level security. Every one MUST pin `search_path`, be owned by a `nologin` role that exists only for it, have `execute` revoked from `public`, filter on a caller-supplied identifier that cannot widen the result, and carry its own isolation test.
 
 ## 6. Versioning — date based, append only

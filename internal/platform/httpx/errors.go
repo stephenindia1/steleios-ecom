@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/stephenindia1/steleios-ecom/internal/platform/authz"
 	"github.com/stephenindia1/steleios-ecom/internal/platform/ratelimit"
@@ -32,6 +33,7 @@ const (
 	CodeConflict        Code = "conflict"
 	CodeIdempotency     Code = "idempotency_conflict"
 	CodeRateLimited     Code = "rate_limited"
+	CodeReauthRequired  Code = "reauth_required"
 	CodePayloadTooLarge Code = "payload_too_large"
 	CodeUnavailable     Code = "service_unavailable"
 	CodeTimeout         Code = "timeout"
@@ -115,6 +117,20 @@ func NotFound(cause error) *Error {
 // transition that is not allowed, or a uniqueness violation.
 func Conflict(message string, cause error) *Error {
 	return newError(http.StatusConflict, CodeConflict, message, cause)
+}
+
+// ReauthRequired reports that the action needs the password re-entered.
+//
+// A DISTINCT code, not a plain 403, and that distinction is the point: the
+// client must know to prompt for a password rather than show "you do not have
+// access", which would be both wrong and a dead end for someone who does have
+// access and simply signed in an hour ago (BR-ADM-07).
+func ReauthRequired(window time.Duration) *Error {
+	return &Error{
+		Status:  http.StatusForbidden,
+		Code:    CodeReauthRequired,
+		Message: fmt.Sprintf("Please confirm your password to continue. This is asked again after %s of inactivity for actions of this kind.", window),
+	}
 }
 
 // RateLimited reports that a throttle was hit. It names no limit and no

@@ -164,6 +164,25 @@ type Repos struct {
 // Querier exposes the transaction-bound handle to repository constructors.
 func (r Repos) Querier() Querier { return r.q }
 
+// scope says what a transaction is allowed to see.
+//
+// Three values, not a bool, because there are genuinely three answers and a
+// bool would force the third to be spelled as the absence of the second.
+type scope uint8
+
+const (
+	// scopeTenant confines the transaction to one shop. The overwhelming
+	// majority of the application.
+	scopeTenant scope = iota
+	// scopeSystem has no shop and therefore sees no tenant-scoped row at all.
+	// This is not a bypass; it is the absence of a scope.
+	scopeSystem
+	// scopePlatform is the vendor operating the SaaS. It sees the tables that
+	// describe WHICH businesses exist — clients, shops, subscriptions — and no
+	// business data whatsoever (BR-ADM-14, migration 00020).
+	scopePlatform
+)
+
 // setTenant scopes the current transaction to one shop.
 //
 // `set_config(..., true)` is TRANSACTION-LOCAL. That matters enormously with a
@@ -181,6 +200,39 @@ func setTenant(ctx context.Context, q Querier) error {
 	return nil
 }
 
+// setPlatform marks the current transaction as the vendor operating the SaaS.
+//
+// Transaction-local for the same reason the tenant is: a plain SET would persist
+// on the pooled connection and the next request to pick it up — a shop worker's
+// — would run with the vendor's visibility. That would be far worse than the
+// tenant equivalent, because it crosses the client boundary rather than moving
+// within it.
+//
+// What the flag actually grants is decided entirely by the policies in migration
+// 00020, and it is granted on the vendor-scoped tables only. Setting it does not
+// widen anything on a business table, and there is a test that says so.
+func setPlatform(ctx context.Context, q Querier) error {
+	if _, err := q.Exec(ctx, "select set_config('app.platform', 'on', true)"); err != nil {
+		return fmt.Errorf("postgres: scope to platform: %w", err)
+	}
+	return nil
+}
+
+// applyScope sets whatever the scope requires on the transaction.
+func applyScope(ctx context.Context, q Querier, sc scope) error {
+	switch sc {
+	case scopeTenant:
+		return setTenant(ctx, q)
+	case scopePlatform:
+		return setPlatform(ctx, q)
+	case scopeSystem:
+		return nil
+	default:
+		// Unreachable, and fails closed rather than silently running unscoped.
+		return fmt.Errorf("postgres: unknown scope %d", sc)
+	}
+}
+
 // UnitOfWork runs a function inside a single transaction.
 //
 // This is the only way to make several repositories atomic. Passing a pgx.Tx
@@ -191,6 +243,7 @@ func setTenant(ctx context.Context, q Querier) error {
 type UnitOfWork interface {
 	Do(ctx context.Context, fn func(Repos) error) error
 	DoSystem(ctx context.Context, fn func(Repos) error) error
+	DoPlatform(ctx context.Context, fn func(Repos) error) error
 }
 
 // unitOfWork is the pgx-backed implementation.
@@ -210,7 +263,7 @@ func NewUnitOfWork(p *Pool) UnitOfWork {
 // tenant is an error rather than an unscoped transaction, because unscoped
 // would silently see nothing and read as "no data" (ADR 0007).
 func (u *unitOfWork) Do(ctx context.Context, fn func(Repos) error) error {
-	return u.run(ctx, true, fn)
+	return u.run(ctx, scopeTenant, fn)
 }
 
 // DoSystem runs fn in a transaction with NO shop scope.
@@ -224,7 +277,21 @@ func (u *unitOfWork) Do(ctx context.Context, fn func(Repos) error) error {
 // tenant-scoped rows at all, because `tenant_id = NULL` is never true. This is
 // not a bypass; it is the absence of a scope.
 func (u *unitOfWork) DoSystem(ctx context.Context, fn func(Repos) error) error {
-	return u.run(ctx, false, fn)
+	return u.run(ctx, scopeSystem, fn)
+}
+
+// DoPlatform runs fn as the vendor operating the SaaS.
+//
+// The caller MUST have established that the actor holds a platform role. This
+// function does not check — it cannot, because it has no actor — it only sets
+// the flag the policies read. The authorization is the route's policy and the
+// service's own re-assertion (SEC-09); this is the data-layer half.
+//
+// Named and greppable for the same reason as DoSystem: every use is a review
+// item, and `grep DoPlatform` is the complete list of code that can see across
+// clients.
+func (u *unitOfWork) DoPlatform(ctx context.Context, fn func(Repos) error) error {
+	return u.run(ctx, scopePlatform, fn)
 }
 
 // run is the shared transaction body.
@@ -232,7 +299,7 @@ func (u *unitOfWork) DoSystem(ctx context.Context, fn func(Repos) error) error {
 // MOD-09: fn MUST NOT perform network I/O to a third party. A transaction that
 // waits on an external service holds locks for the duration of someone else's
 // outage.
-func (u *unitOfWork) run(ctx context.Context, scoped bool, fn func(Repos) error) (err error) {
+func (u *unitOfWork) run(ctx context.Context, sc scope, fn func(Repos) error) (err error) {
 	tx, err := u.pool.BeginTx(ctx, pgx.TxOptions{
 		// Read-committed is sufficient because contended writes use atomic
 		// conditional updates and explicit row locks rather than relying on the
@@ -259,10 +326,8 @@ func (u *unitOfWork) run(ctx context.Context, scoped bool, fn func(Repos) error)
 		}
 	}()
 
-	if scoped {
-		if err = setTenant(ctx, tx); err != nil {
-			return err
-		}
+	if err = applyScope(ctx, tx, sc); err != nil {
+		return err
 	}
 
 	if err = fn(Repos{q: tx}); err != nil {
@@ -283,7 +348,7 @@ func (u *unitOfWork) run(ctx context.Context, scoped bool, fn func(Repos) error)
 // and the alternative — setting the scope non-locally and remembering to reset
 // it — is the kind of thing that works until the day it does not.
 func (p *Pool) Read(ctx context.Context, fn func(Repos) error) error {
-	return p.read(ctx, true, fn)
+	return p.read(ctx, scopeTenant, fn)
 }
 
 // ReadSystem runs fn in a read-only transaction with NO shop scope.
@@ -293,10 +358,18 @@ func (p *Pool) Read(ctx context.Context, fn func(Repos) error) error {
 // is greppable, and it grants nothing — row-level security still hides every
 // tenant-scoped row (ADR 0007).
 func (p *Pool) ReadSystem(ctx context.Context, fn func(Repos) error) error {
-	return p.read(ctx, false, fn)
+	return p.read(ctx, scopeSystem, fn)
 }
 
-func (p *Pool) read(ctx context.Context, scoped bool, fn func(Repos) error) error {
+// ReadPlatform runs fn as the vendor operating the SaaS.
+//
+// See DoPlatform. This is the read half, and carries the same requirement: the
+// caller must already have established the actor holds a platform role.
+func (p *Pool) ReadPlatform(ctx context.Context, fn func(Repos) error) error {
+	return p.read(ctx, scopePlatform, fn)
+}
+
+func (p *Pool) read(ctx context.Context, sc scope, fn func(Repos) error) error {
 	tx, err := p.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return fmt.Errorf("postgres: begin read: %w", err)
@@ -305,10 +378,8 @@ func (p *Pool) read(ctx context.Context, scoped bool, fn func(Repos) error) erro
 	// exit and its error is not interesting.
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }() //nolint:errcheck // read-only: nothing to lose
 
-	if scoped {
-		if err := setTenant(ctx, tx); err != nil {
-			return err
-		}
+	if err := applyScope(ctx, tx, sc); err != nil {
+		return err
 	}
 	return fn(Repos{q: tx})
 }

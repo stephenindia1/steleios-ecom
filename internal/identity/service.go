@@ -266,6 +266,56 @@ func (s *Service) ChangePassword(ctx context.Context, token, current, next strin
 	return nil
 }
 
+// Reauth confirms the signed-in person's password without changing it.
+//
+// It is what earns access to a high-consequence action for a short window: a
+// refund, a GST rate, a role grant, provisioning a client (BR-ADM-07). The
+// session is already valid — what this proves is that the person at the keyboard
+// is still the one who opened it, which a session cookie cannot say.
+//
+// A wrong password counts towards the lockout exactly as a sign-in does. Without
+// that, this endpoint would be an unlimited password oracle for anyone who
+// picked up an unlocked console.
+func (s *Service) Reauth(ctx context.Context, token, password string) error {
+	sess, err := s.session(ctx, token)
+	if err != nil {
+		return err
+	}
+
+	ident, err := s.repo.FindByID(ctx, sess.IdentityID)
+	if err != nil {
+		return err
+	}
+	now := s.clock.Now()
+	if err := ident.CanSignIn(now); err != nil {
+		return err
+	}
+
+	if err := s.hasher.Verify(ident.PasswordHash, password); err != nil {
+		s.recordFailure(ctx, ident, now)
+		s.logAttempt(ctx, "bad_password_reauth", ident.Email, "")
+		return ErrBadPassword
+	}
+
+	if err := s.repo.RecordReauth(ctx, ident.ID, now); err != nil {
+		return err
+	}
+	// Clears the failure counter, the same as a successful sign-in: the person
+	// has just proved the password, so counting earlier mistypes against them
+	// would lock them out for succeeding.
+	if err := s.repo.RecordSuccessfulLogin(ctx, ident.ID, now); err != nil {
+		s.log.ErrorContext(ctx, "could not clear failures after reauth",
+			"identity_id", ident.ID.String(), "error", err.Error())
+	}
+
+	_ = s.audit.Record(ctx, audit.Entry{ //nolint:errcheck // logged inside
+		Action:       "identity.reauthenticated",
+		ResourceType: "identity",
+		ResourceID:   ident.ID.String(),
+	})
+	return nil
+}
+
 // SignOut ends this session.
 func (s *Service) SignOut(ctx context.Context, token string) error {
 	return s.sessions.Revoke(ctx, token, session.ReasonSignedOut)
@@ -315,6 +365,7 @@ func (s *Service) Resolve(ctx context.Context, token string) (authz.Actor, error
 		ID:                 ident.ID.String(),
 		Type:               sess.ActorType,
 		SessionFingerprint: sess.Fingerprint,
+		ReauthedAt:         ident.LastReauthAt,
 	}
 
 	// BR-REC-20: while locked, the actor carries NO roles. Every permission

@@ -254,3 +254,83 @@ func PolicyReason(err error) string {
 	}
 	return "Your password " + reason + "."
 }
+
+// wordlist is the source for generated passphrases.
+//
+// Short, common, unambiguous English words: no homophones a person could
+// mis-hear over a phone (no "right"/"write"), nothing that could be mistaken for
+// another word in the list, and nothing that spells something unfortunate when
+// four are put together. 256 entries, so each word contributes exactly 8 bits
+// and the modulo below introduces no bias.
+var wordlist = [256]string{
+	"amber", "anchor", "apple", "arrow", "autumn", "bacon", "badge", "bagel",
+	"balloon", "bamboo", "banjo", "barley", "basket", "beacon", "beetle", "bells",
+	"birch", "biscuit", "bison", "blanket", "blossom", "bobbin", "bonfire", "bottle",
+	"boulder", "bracket", "branch", "brandy", "bridge", "bronze", "bubble", "bucket",
+	"buffalo", "bugle", "bundle", "burrow", "butter", "cabin", "cactus", "camel",
+	"candle", "canvas", "canyon", "carbon", "cargo", "carpet", "carrot", "castle",
+	"cedar", "cello", "cement", "chalk", "cherry", "chimney", "cinder", "circus",
+	"clover", "cobalt", "cocoa", "coffee", "collar", "comet", "compass", "copper",
+	"coral", "cotton", "cricket", "crimson", "crystal", "cymbal", "daisy", "damson",
+	"dawn", "delta", "denim", "diamond", "dolphin", "domino", "donkey", "dragon",
+	"drum", "dune", "eagle", "ember", "emerald", "engine", "fabric", "falcon",
+	"fennel", "fern", "fiddle", "flint", "flute", "forest", "fossil", "fountain",
+	"foxglove", "frost", "galaxy", "garden", "garlic", "gazelle", "ginger", "glacier",
+	"glider", "granite", "gravel", "grotto", "guitar", "hammer", "harbour", "harvest",
+	"hazel", "heather", "hedge", "helmet", "hickory", "hollow", "honey", "hornet",
+	"iceberg", "indigo", "ingot", "island", "ivory", "jacket", "jaguar", "jasmine",
+	"jigsaw", "juniper", "kettle", "keystone", "kitten", "koala", "lagoon", "lantern",
+	"lattice", "lavender", "ledger", "lemon", "lentil", "leopard", "lilac", "linen",
+	"lobster", "locket", "lotus", "lupin", "magnet", "magnolia", "mahogany", "mallet",
+	"mango", "maple", "marble", "marigold", "meadow", "melon", "mercury", "meteor",
+	"mimosa", "mineral", "mint", "mirror", "mitten", "monsoon", "mosaic", "mulberry",
+	"mustard", "nectar", "needle", "nettle", "nickel", "nutmeg", "oatmeal", "obsidian",
+	"ocean", "octopus", "olive", "onyx", "opal", "orbit", "orchid", "otter",
+	"oyster", "paddle", "palm", "papaya", "paprika", "parchment", "parsley", "pastel",
+	"peacock", "pebble", "pelican", "pepper", "petal", "pewter", "pigment", "pillow",
+	"pistachio", "planet", "platinum", "plum", "pollen", "pomelo", "poppy", "portal",
+	"pottery", "prairie", "pumpkin", "quartz", "quiver", "radish", "rainbow", "ranger",
+	"raven", "ribbon", "rocket", "rosemary", "rubble", "ruby", "saffron", "sandal",
+	"sapphire", "satchel", "scarlet", "seagull", "sequoia", "shadow", "shovel", "silver",
+	"sonnet", "spinach", "spruce", "squirrel", "stallion", "sterling", "stucco", "sugar",
+	"summit", "sunset", "syrup", "tangerine", "tapestry", "teapot", "temple", "thicket",
+	"thimble", "thistle", "thunder", "timber", "topaz", "tortoise", "trellis", "tulip",
+}
+
+// Generate returns a random passphrase of n words joined by hyphens.
+//
+// It exists for one purpose: the password the vendor issues when an owner has
+// lost everything, or when a business is first onboarded (BR-REC-10). It is read
+// aloud over a phone and typed from an SMS, which is why it is words rather than
+// symbols — "marigold-thistle-copper-lantern" survives that journey and
+// "xK9$mQ2!" does not.
+//
+// Entropy: the list holds exactly 256 words, so each contributes 8 bits. Four
+// words is 32 bits, which would be weak for a lasting password and is ample for
+// one that expires within the hour and is rate-limited on every attempt. Callers
+// wanting more ask for more words.
+//
+// The list length being a power of two is what makes the modulo unbiased. If a
+// word is ever added or removed, this becomes biased — hence the fixed-size
+// array, which makes the count a compile-time fact rather than a convention.
+func Generate(words int) (string, error) {
+	const minWords = 3
+	if words < minWords {
+		return "", fmt.Errorf("passwd: a generated password needs at least %d words, got %d", minWords, words)
+	}
+
+	b := make([]byte, words)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("passwd: read entropy: %w", err)
+	}
+
+	var sb strings.Builder
+	sb.Grow(words * 10)
+	for i, v := range b {
+		if i > 0 {
+			sb.WriteByte('-')
+		}
+		sb.WriteString(wordlist[v])
+	}
+	return sb.String(), nil
+}

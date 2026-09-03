@@ -41,6 +41,7 @@ type fakeRepo struct {
 	failErr error
 
 	failedLogins  int
+	reauths       int
 	lockedUntil   *time.Time
 	successes     int
 	passwordSaved string
@@ -127,6 +128,21 @@ func (f *fakeRepo) RecordFailedLogin(_ context.Context, id uuid.UUID, lockUntil 
 
 func (f *fakeRepo) RecordSuccessfulLogin(_ context.Context, _ uuid.UUID, _ time.Time) error {
 	f.successes++
+	return nil
+}
+
+func (f *fakeRepo) RecordReauth(_ context.Context, id uuid.UUID, at time.Time) error {
+	if f.failErr != nil {
+		return f.failErr
+	}
+	i, ok := f.byID[id]
+	if !ok {
+		return identity.ErrNoSuchUser
+	}
+	i.LastReauthAt = &at
+	f.byID[id] = i
+	f.byEmail[i.Email] = i
+	f.reauths++
 	return nil
 }
 
