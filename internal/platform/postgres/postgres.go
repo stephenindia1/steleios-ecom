@@ -136,6 +136,13 @@ func (p *Pool) Stats() (inUse, idle, waiting int32) {
 	return s.AcquiredConns(), s.IdleConns(), int32(s.EmptyAcquireCount()) //nolint:gosec // counters are non-negative
 }
 
+// ErrNoRows is returned when a query that expected exactly one row found none.
+//
+// Re-exported here so that repositories can match it with errors.Is without
+// importing pgx themselves (DRY-02) — and so nobody is tempted to compare an
+// error's text, which breaks silently the day a driver rewords it (GO-024).
+var ErrNoRows = pgx.ErrNoRows
+
 // Querier is the subset of pgx a repository needs. Repositories accept this so
 // the same code runs inside and outside a transaction (OOP-06).
 type Querier interface {
