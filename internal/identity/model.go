@@ -1,0 +1,121 @@
+// Package identity owns who a person is, how they prove it, and which shops
+// they may act in.
+//
+// The three things it keeps apart, because conflating them is how
+// authorization bugs start:
+//
+//	IDENTITY     a login. One person, one password. Not tenant-scoped:
+//	             authentication precedes tenancy (migration 00016).
+//	MEMBERSHIP   that identity's place in one shop, with its roles. Tenant
+//	             scoped, and the thing that actually grants access.
+//	SESSION      a live sign-in, bound to a token and to at most one shop.
+//
+// An identity by itself grants nothing at all. That is what makes it safe for
+// it to be readable before a shop is known.
+package identity
+
+import (
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/stephenindia1/steleios-ecom/internal/platform/authz"
+	"github.com/stephenindia1/steleios-ecom/internal/platform/tenant"
+)
+
+// Status values for an identity, matching the database's check constraint.
+const (
+	StatusActive    = "active"
+	StatusSuspended = "suspended"
+	StatusDisabled  = "disabled"
+	// StatusBlocked is permanent. A blocked user is never reactivated; the
+	// person gets a new user and a recorded succession (migration 00011).
+	StatusBlocked = "blocked"
+)
+
+// Identity is a login.
+type Identity struct {
+	ID           uuid.UUID
+	Email        string
+	Phone        string
+	FullName     string
+	Status       string
+	PasswordHash string
+
+	// MustChangePassword locks the account to exactly one action: changing the
+	// password. Set when the vendor issues a generated one during recovery
+	// (BR-REC-20).
+	MustChangePassword bool
+	PasswordExpiresAt  *time.Time
+
+	FailedLogins int
+	LockedUntil  *time.Time
+	LastLoginAt  *time.Time
+	LastReauthAt *time.Time
+}
+
+// CanSignIn reports whether this identity may authenticate at all, and why not
+// when it may not.
+//
+// Blocked is checked first and separately from the rest: it is permanent, and
+// treating it as a temporary condition would invite a "just unblock them"
+// support action that migration 00011 exists to prevent.
+func (i Identity) CanSignIn(now time.Time) error {
+	switch i.Status {
+	case StatusBlocked:
+		return ErrBlocked
+	case StatusSuspended, StatusDisabled:
+		return ErrNotActive
+	case StatusActive:
+	default:
+		return ErrNotActive
+	}
+
+	if i.LockedUntil != nil && now.Before(*i.LockedUntil) {
+		return ErrLockedOut
+	}
+	return nil
+}
+
+// Membership is an identity's place in one shop.
+type Membership struct {
+	StaffID    uuid.UUID
+	TenantID   tenant.ID
+	ShopCode   string
+	ShopName   string
+	ClientID   uuid.UUID
+	ClientCode string
+	Status     string
+	Roles      []authz.Role
+}
+
+// IsActive reports whether the membership currently grants anything.
+func (m Membership) IsActive() bool { return m.Status == StatusActive }
+
+// Authenticated is what a successful sign-in produces.
+type Authenticated struct {
+	Token       string
+	Identity    Identity
+	Memberships []Membership
+
+	// MustChangePassword mirrors the identity flag, surfaced so the caller does
+	// not have to know to look for it. While true the session may do exactly
+	// one thing (BR-REC-20).
+	MustChangePassword bool
+
+	// NeedsShopSelection is true when the person belongs to more than one shop
+	// and has not chosen yet. An owner with two shops lands on a switcher.
+	NeedsShopSelection bool
+}
+
+// ActorFor builds the authorization actor for a membership.
+//
+// This is the only place a Membership becomes an authz.Actor. Roles come from
+// the membership rather than from the identity, so the same person can be a
+// manager in one shop and a counter operator in another (BR-ADM-12).
+func (a Authenticated) ActorFor(m Membership) authz.Actor {
+	return authz.Actor{
+		ID:    a.Identity.ID.String(),
+		Type:  authz.ActorAdmin,
+		Roles: m.Roles,
+	}
+}
