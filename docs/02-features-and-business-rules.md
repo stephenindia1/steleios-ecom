@@ -896,7 +896,7 @@ The till does not sell from a guess. It sells from a **lease**: specific batches
 | ID | Rule |
 |---|---|
 | BR-OFF-20 | `[MONEY]` A till sells offline **only within its lease**. Beyond it, the sale is refused with the reason stated — a refusal, never an oversell. |
-| BR-OFF-21 | `[MONEY]` Offline payment is **cash**, or a card taken on a standalone terminal and recorded with its reference. Razorpay cannot authorise offline; a till MUST NOT claim a card or UPI payment succeeded without an approval it cannot have obtained. |
+| BR-OFF-21 | `[MONEY]` Offline payment is **cash**, or an externally-settled UPI or card payment whose reference the operator records (§8A.6). Razorpay cannot authorise offline; a till MUST NOT claim a gateway payment succeeded without an approval it cannot have obtained. |
 | BR-OFF-22 | `[LEGAL]` Each till has its **own invoice series** with a pre-allocated block, replenished with the lease. GST requires consecutive numbering within a series, not one global sequence, so per-till series stay compliant without a round trip (BR-ORD-10). |
 | BR-OFF-23 | Each offline sale carries a till-generated UUIDv7 identifier, recorded with `sold_offline_at`. That identifier is the idempotency key for sync (BR-OFF-30). |
 | BR-OFF-24 | `[SEC]` Local till storage is encrypted at rest and holds no card data and no customer PII beyond what the receipt requires (BR-DAT-06, BR-PAY-11). |
@@ -923,6 +923,59 @@ The till does not sell from a guess. It sells from a **lease**: specific batches
 | BR-OFF-41 | Unsynced offline revenue is reported daily to finance with its value, so the amount of money recorded only on a device is a number rather than an impression (BR-RCV-24). |
 | BR-OFF-42 | Offline-sale events (`sale.completed_offline`, `sale.synced`, `sale.sync_rejected`, `till.went_offline`, `till.resynced`) are emitted per doc 06 §3, so how much selling actually happens offline is a measurement rather than an assumption. |
 | BR-OFF-43 | The scan-to-confirm budget of 200 ms p95 (BR-SCN-35) still applies online, because latency at a till is a queue of customers (doc 05 §7). |
+
+### 8A.6 Counter payment methods
+
+> **The platform does not process counter payments. It records them.**
+>
+> Money at the counter moves through the shop's own channels — the cash drawer, the shop's UPI QR, the shop's card terminal — none of which the platform touches. Razorpay processes **storefront** payments only. At the counter, every payment is a *record of something that happened elsewhere*.
+
+This is a deliberate and reasonable division: the shop already has a QR and a card machine, and Steleios is its till and inventory system, not its payment processor. But it has one large consequence that shapes every rule below:
+
+**No counter payment is verified at the moment of sale.** Reconciliation is therefore not a safety net for an unusual case — it is the primary financial control for the entire counter channel.
+
+| Method | What the platform holds | Available offline |
+|---|---|---|
+| **Cash** | Amount tendered and change given; reconciled against the drawer count | Yes |
+| **UPI** — the shop's own QR | The transaction reference the operator reads off the customer's confirmation | Yes |
+| **Card** — the shop's own terminal | Terminal id, approval/RRN reference, network, last four | Yes |
+
+| ID | Rule |
+|---|---|
+| BR-CPM-01 | `[MONEY]` Every payment records its **confirmation source**: `gateway` (storefront, provider-verified) or `recorded` (counter, operator-attested). It is stored on the payment, shown in admin, printed on the receipt as the tender type, and carried into every financial report. A recorded payment is never displayed or counted as a verified one. |
+| BR-CPM-02 | `[MONEY]` A counter payment puts the order into **`paid_unverified`**, not `paid`. Fulfilment proceeds immediately — the customer is standing there with their goods — but the money is not treated as settled until reconciliation matches it (BR-CPM-20). Revenue reports separate verified from unverified takings; totalling them as one number is prohibited. |
+| BR-CPM-02a | `[MONEY]` Razorpay is **not used at the counter**. A counter sale MUST NOT create a provider order, and the counter UI MUST NOT offer a gateway path — offering one that cannot be completed is worse than not offering it. |
+| BR-CPM-03 | `[SEC][LEGAL]` **No card data ever enters the platform.** A card attestation records the terminal id, the approval or RRN reference, the card network, and the last four digits only. Full card number, expiry and CVV MUST NOT be captured, stored, logged or displayed — not in a note field, not in a photo, not anywhere (BR-PAY-11). |
+| BR-CPM-04 | `[MONEY]` Required fields per method are mandatory and format-validated before the sale completes: **UPI** — transaction reference (UTR/RRN) and the amount; **card** — terminal id, approval/RRN reference, network, last four. A sale MUST NOT complete with a blank reference and a promise to fill it in later. |
+| BR-CPM-05 | `[MONEY]` The recorded amount must equal the order total exactly. Split tender — part cash, part UPI — is supported as **multiple payment records that sum to the total**, never as one adjusted amount. |
+| BR-CPM-06 | `[SEC][MONEY]` A transaction reference is **unique across all payments**. Re-using a UTR or approval code is either an operator mistake or an attempt to mark two sales paid with one transfer, and is refused with an explicit message. |
+| BR-CPM-07 | `[SEC]` The operator confirms, as an explicit action, that they saw the payment confirmation on the customer's device or the terminal slip. That confirmation is recorded with the operator's identity and is what makes the attestation attributable (BR-ADM-06). |
+| BR-CPM-08 | `[MONEY]` A recorded non-cash payment is capped per sale by a configured value, because nothing verified it. Above the cap the sale requires manager approval, recorded with the approver's identity. |
+| BR-CPM-09 | UPI uses the shop's **static** QR. The platform does not generate a dynamic amount-bearing QR, because it is not in the payment path and a QR it generated would imply a verification it cannot perform. |
+| BR-CPM-10 | `[MONEY]` The till shows the amount due prominently and the operator enters the reference **after** the customer's confirmation appears. The sequence matters: entering a reference before payment completes is how a sale gets recorded for money that never arrived. |
+
+#### Cash handling
+
+| ID | Rule |
+|---|---|
+| BR-CPM-15 | `[MONEY]` A cash payment records the amount tendered and the change given, so the drawer can be reconciled against recorded sales rather than against a total alone. |
+| BR-CPM-16 | `[MONEY]` A shift close counts the drawer and records the variance against expected cash. Variance is reported per till and per operator — a persistent variance is a finding, not noise. |
+| BR-CPM-17 | `[SEC]` Cash refunds at the counter follow the refund rules and are not available to `counter_sales` (docs/02 §15); a refund goes to a manager. |
+
+#### Reconciliation — the counter's primary financial control
+
+Because the platform never sees counter money move, reconciliation is not an audit afterthought. It is the **only** mechanism that turns a counter sale's recorded payment into a known fact, and it is where every error and every fraud in the channel surfaces.
+
+| ID | Rule |
+|---|---|
+| BR-CPM-20 | `[MONEY]` Recorded payments are reconciled against the **bank/UPI settlement statement** and the **card terminal's batch settlement**, matched on reference and amount. A match moves the order from `paid_unverified` to `paid`. Cash is reconciled against the drawer count at shift close (BR-CPM-16). |
+| BR-CPM-21 | `[MONEY]` An unmatched record past a configured window (default 3 working days) is an **exception**, raised to finance with its value and its recording operator. This is the control that catches a mistyped reference, a payment that never arrived, and an operator pocketing cash while recording a UPI reference that does not exist. |
+| BR-CPM-22 | `[MONEY]` A settlement entry with no matching record is equally an exception: money arrived that no sale accounts for. |
+| BR-CPM-23 | `[MONEY]` Unreconciled counter revenue is reported daily to finance with its value and age, alongside unsynced offline revenue (BR-OFF-41). Both answer the same question: **how much of today's takings exists only as somebody's word.** |
+| BR-CPM-24 | Reconciliation is idempotent and re-runnable — a restated settlement file must not double-match (BR-PAY-07 discipline). |
+| BR-CPM-26 | `[MONEY]` Reconciliation is a **launch requirement for the counter channel, not a later phase.** Shipping counter sales without it would mean the business has no way to know whether the money it recorded actually arrived. |
+| BR-CPM-27 | Exception rate and unmatched value are tracked per operator and per till over time. One mistyped reference is an accident; a pattern is a finding. |
+| BR-CPM-25 | Counter payment events (`counter.payment_recorded`, `counter.payment_attested`, `counter.payment_reconciled`, `counter.payment_unmatched`, `counter.drawer_variance`) are emitted per doc 06 §3. |
 
 ---
 
