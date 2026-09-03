@@ -135,9 +135,13 @@ The owner pays the vendor by **Razorpay**: a subscription for monthly recurring,
 
 ## 6. Scope of responsibility
 
-**Steleios records sales and inventory.** That is the product: what was sold, what was received, what is in stock, what was paid, and the documents that go with them.
+> **The vendor provides a platform. The client owns and operates the business.**
+
+Steleios records sales and inventory: what was sold, what was received, what is in stock, what was paid, and the documents that go with them. The client decides what to sell, at what price, under what tax treatment, to whom, and what to file — and runs their business on the platform, not through the vendor.
 
 It is not an accounting package, not a tax agent, and not a payment processor.
+
+That division is clean, and it holds in both directions. **The vendor does not get to decide how the client trades. The client does not get to blame the platform for their own commercial and tax decisions. And the vendor remains answerable for the platform working correctly** — which is the part a broad disclaimer would wrongly try to cover, and §6's second half sets out.
 
 ### The client's accountant is the client's relationship
 
@@ -173,6 +177,59 @@ Not processing payments removes several real liabilities. It does not remove all
 | BR-RSP-05 | `[LEGAL][SEC]` **Confidentiality.** Their books, customers and suppliers, held on our infrastructure, isolated per shop and never visible to another client (ADR 0007). |
 | BR-RSP-06 | `[MONEY]` **Availability.** A hosted system that is down is a shop that cannot trade, with nothing to fall back on (ADR 0006, DEP-05). |
 | BR-RSP-07 | `[LEGAL]` Where the system's output is used for a statutory filing, it must be **traceable to source** — any figure on a return resolves to the documents behind it (BR-DOC-53). An accountant who cannot verify a number will not use it, and should not. |
+
+### Client acceptance — tax rates and prices are the client's determination
+
+The client accepts, on the record, that **what to charge and what tax applies are their decisions**. The vendor supplies the machinery that applies them.
+
+The line that actually holds up is between **inputs** and **arithmetic**:
+
+| The client is responsible for | The vendor is responsible for |
+|---|---|
+| Which GST rate applies to a product | Applying that rate correctly |
+| HSN codes and classification | Carrying them onto the invoice |
+| Whether an item is exempt or under composition | Issuing the right document type for it |
+| The prices they charge, and any MRP | Computing the line, the tax and the total from them |
+| Their GSTIN, address and place of supply | Splitting CGST/SGST or IGST from what they entered |
+| **Supplier identity, GSTIN and address** | Validating those details are internally consistent, and deriving the inward split from them |
+| Whether to claim an input credit | Recording the invoice and flagging it against GSTR-2B |
+| Filing, and everything in it | The figures tracing to the documents behind them |
+
+**"You told us the rate; we applied it correctly"** is a term that stands up. **"We are not responsible if our GST calculation is wrong"** is not, and BR-RSP-11 already forbids attempting it.
+
+| ID | Rule |
+|---|---|
+| BR-ACP-01 | `[LEGAL]` At onboarding the client **explicitly accepts** that tax rates, HSN classification, exemption status, prices and their own registration details are their determination, and that filing and its contents are their responsibility. |
+| BR-ACP-02 | `[LEGAL]` Acceptance is **recorded, not assumed**: the terms version, its hash, who accepted, when, and from where. An acceptance nobody can produce is not an acceptance. |
+| BR-ACP-03 | `[LEGAL]` Acceptance records are **append-only and retained for seven years**, alongside the documents they underwrite (BR-ADM-05, BR-DAT-01). A superseded acceptance is never deleted. |
+| BR-ACP-04 | `[LEGAL]` A material change to the terms requires **re-acceptance** by the owner. Continuing to use the system is not acceptance of terms the client has not seen. |
+| BR-ACP-05 | `[LEGAL]` Acceptance is by the **owner**, and the accepting identity is recorded. A member of staff clicking through does not bind the business. |
+
+#### Making the acceptance mean something
+
+> An acceptance clause nobody reads is weak. The same statement made **at the moment the client sets a rate** is strong — and it is also simply more honest, because that is when the determination is actually being made.
+
+| ID | Rule |
+|---|---|
+| BR-ACP-10 | `[LEGAL]` The GST rate entry screen states plainly that the rate is the client's determination, and requires the authorising notification reference (BR-TAX-05). The system MUST NOT suggest a rate as though it were advice. |
+| BR-ACP-11 | `[LEGAL]` Where reference rates are offered as a convenience, they are labelled as a **starting point requiring the client's confirmation**, never as correct for that client's goods. Classification is genuinely contested and depends on the specific product. |
+| BR-ACP-12 | `[LEGAL]` Every rate is stored with the actor who set it, the notification cited, and the effective date (BR-TAX-05, BR-TAX-09). "Who decided this rate applies" is answerable per product, per period, years later. |
+| BR-ACP-13 | `[LEGAL]` Questions the system deliberately does not answer — time of supply at delivery (BR-TAX-03), GST on loyalty redemption (BR-LOY-07) — are surfaced to the client as requiring their advisor's confirmation, never silently defaulted (BR-RSP-12). |
+| BR-ACP-14 | `[MONEY]` None of this dilutes BR-RSP-01. Given the client's inputs, the computation must be right: the rate applied from the correct date, the split correct for the place of supply, the rounding correct, the total equal to its lines. That is the vendor's obligation and it is not disclaimable. |
+
+#### Supplier details drive the inward tax split
+
+The client configures every supplier: legal name, GSTIN and address. **The supplier's state, against the shop's own, is what determines whether a purchase is CGST + SGST or IGST.** Enter the wrong supplier state and the split is wrong — an input error, not a computation error, and squarely the client's.
+
+But the platform is not passive about it. It cannot know which supplier is right; it can and must catch a supplier whose own details contradict each other.
+
+| ID | Rule |
+|---|---|
+| BR-ACP-15 | `[LEGAL]` The client supplies each supplier's legal name, GSTIN, address and state. These are business facts only the client has, and the client is responsible for them being right (BR-SUP-01). |
+| BR-ACP-16 | `[LEGAL]` The platform **validates what it can**: GSTIN format and checksum, and that the **state code embedded in the GSTIN matches the entered state**. A mismatch is refused at save, not accepted and discovered on a return (BR-SUP-02). This is the vendor's obligation — catching inconsistency is arithmetic, not judgement. |
+| BR-ACP-17 | `[LEGAL]` The derived split is **shown before saving**: "supplies from this supplier will be treated as inter-state (IGST)". A client who can see the consequence of the address they entered will catch their own error; one who cannot, will not. |
+| BR-ACP-18 | `[LEGAL]` Supplier details are versioned like any other money-affecting reference data. A purchase invoice snapshots the supplier details in force at receipt, so a later address correction never rewrites the tax treatment of a past purchase (BR-VER-01, BR-VER-03). |
+| BR-ACP-19 | `[MONEY]` The same applies outward: the **customer's** state against the shop's determines CGST/SGST or IGST on a sale, and `place_of_supply` is snapshotted on the order at placement (BR-PRC-04, BR-PRC-05). |
 
 ### How this is stated commercially
 
