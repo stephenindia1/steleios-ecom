@@ -1002,7 +1002,103 @@ Because the platform never sees counter money move, reconciliation is not an aud
 
 ---
 
-## 9. Payments
+## 9. Documents and accounting records
+
+> **Steleios records payments; it never processes them** ([ADR 0008](decisions/0008-no-payment-processing.md)). Every `BR-PAY-*` and `BR-COD-*` rule in the withdrawn section at the end of this chapter is **withdrawn and MUST NOT be implemented**.
+
+This is now the accounting core of the product: a complete, GST-compliant document trail for **everything that moves goods or money**, in both directions.
+
+| Direction | Event | Document |
+|---|---|---|
+| Outward | Sale | **Tax invoice** |
+| Outward | Sale of exempt or composition goods | **Bill of supply** |
+| Outward | Customer return, or a reduction in value | **Credit note** |
+| Outward | An increase in value after invoicing | **Debit note** |
+| Inward | Goods received from a supplier | **Purchase invoice** recorded against the receipt |
+| Inward | Return to supplier | **Debit note**, matched to the supplier's credit note |
+| Either | Goods moving without a sale | **Delivery challan** |
+
+### 9.1 Numbering and immutability
+
+| ID | Rule |
+|---|---|
+| BR-DOC-01 | `[LEGAL]` Every document type has its own **series**, and each series is consecutive with no gaps within a financial year. Numbers are allocated by the database, serialized, so two concurrent sales cannot take the same number. |
+| BR-DOC-02 | `[LEGAL]` A number is allocated **only when the document is issued**, never reserved in advance and never released. A cancelled invoice keeps its number and is marked cancelled; deleting it would leave a gap, and a gap in an invoice series is what an auditor asks about first. |
+| BR-DOC-03 | `[LEGAL]` Issued documents are **immutable**. A correction is a credit or debit note referencing the original, never an edit. This is enforced the same way the audit log is: no `UPDATE`, no `DELETE` (BR-ADM-05). |
+| BR-DOC-04 | `[LEGAL]` Every document snapshots everything it asserts — party details, addresses, GSTIN, line items, quantities with UoM and UQC, HSN codes, rates, tax split, totals in words — so it reprints identically years later regardless of what has changed since (BR-ORD-03, BR-VER-03). |
+| BR-DOC-05 | Documents are rendered to PDF on issue and stored. The stored file is the record; regenerating it must produce the same document, and a template change MUST NOT alter an already-issued one. |
+| BR-DOC-06 | `[LEGAL]` Series are per shop (tenant). Multiple series are permitted provided each is itself consecutive, which is what lets each shop number independently. |
+
+### 9.2 Sales invoice
+
+| ID | Rule |
+|---|---|
+| BR-DOC-10 | `[LEGAL]` A tax invoice carries: supplier name, address and GSTIN; customer name and address, with GSTIN for a B2B sale; invoice number and date; place of supply; per line the description, HSN, quantity with UQC, unit price, taxable value, and the GST split; the total, and the total in words. |
+| BR-DOC-11 | `[LEGAL]` The GST split follows place of supply — CGST + SGST intra-state, IGST inter-state — using the rate in force on the taxable event date (BR-PRC-04, BR-TAX-02). |
+| BR-DOC-12 | `[LEGAL]` A **bill of supply** is issued instead of a tax invoice for exempt goods or under composition. The two are different documents with different series and MUST NOT be conflated. |
+| BR-DOC-13 | An invoice is issued on transition to `paid` or `paid_unverified` — the goods have gone, so the document is due (BR-ORD-09). |
+| BR-DOC-14 | `[LEGAL]` A counter sale's invoice is available as a printed receipt and, where the customer gives contact details, by email or link. |
+
+### 9.3 Purchase invoices — the inward side
+
+Recording what the shop **buys** is half of accounting and is what makes input tax credit claimable. It is not a lesser feature than the sales side.
+
+| ID | Rule |
+|---|---|
+| BR-DOC-20 | `[LEGAL]` Every goods receipt (§2A) records the supplier's invoice: supplier GSTIN, their invoice number and date, line items with HSN and quantity, taxable value, tax split, and total. |
+| BR-DOC-21 | `[MONEY]` The purchase invoice is **matched against what was actually received**. A quantity or price difference is an exception raised to purchasing, not silently accepted — this is what catches short deliveries and wrong prices. |
+| BR-DOC-22 | `[LEGAL]` `(supplier_id, supplier_invoice_number, financial_year)` is unique. The same supplier invoice cannot be recorded twice, which would claim the input tax credit twice. |
+| BR-DOC-23 | `[MONEY]` The invoice links to the **batches** it created (BR-BAT-07), so batch cost traces to the document that set it and margin is auditable to source. |
+| BR-DOC-24 | `[LEGAL]` Input tax credit eligibility is recorded per invoice, including ineligible and blocked credits, because claiming credit that is not available is the most common GST error and the most expensive to unwind. |
+| BR-DOC-25 | `[LEGAL]` Purchase invoices are reconciled against **GSTR-2B** — the credit auto-drafted from suppliers' own filings. An invoice the shop holds but the supplier never filed is an exception: the credit is not available until the supplier files, and the shop needs to know before it claims. |
+
+### 9.4 Returns, both directions
+
+| ID | Rule |
+|---|---|
+| BR-DOC-30 | `[LEGAL]` A **customer return** issues a credit note referencing the original invoice number and date, with the returned lines, their taxable value and their tax reversal (BR-RET-08). |
+| BR-DOC-31 | `[MONEY]` Credit note value is computed from the original invoice's snapshot — including the proportional share of any discount — never from current prices (BR-RET-03). |
+| BR-DOC-32 | `[LEGAL]` A **return to supplier** (§12A) issues a debit note referencing the purchase invoice, and is matched to the supplier's own credit note when it arrives. Unmatched debit notes age on a report; an unrecovered RTV is a real loss (BR-RTV-04). |
+| BR-DOC-33 | `[LEGAL]` A return reverses input tax credit or output tax in the period the note is issued, and the reversal appears in the returns for that period. |
+| BR-DOC-34 | `[MONEY]` Cumulative credit notes against an invoice can never exceed it (BR-RET-04). |
+
+### 9.5 Payment records
+
+Payment recording is specified in §8A.6 and applies to **every channel**, not only the counter.
+
+| ID | Rule |
+|---|---|
+| BR-DOC-40 | `[MONEY]` A payment record is linked to the documents it settles. One payment may settle several invoices, and one invoice may be settled by several payments; the allocation is explicit and MUST sum correctly. |
+| BR-DOC-41 | `[MONEY]` Outstanding balance per customer and per supplier is derived from documents minus allocated payments. It is never a stored figure someone can adjust. |
+| BR-DOC-42 | Ageing reports — receivables and payables by bucket — are produced from the same data. A shop's most common question is who owes it money and who it owes. |
+| BR-DOC-43 | `[MONEY]` Advances received before an invoice are recorded as such and adjusted against the invoice when it is issued. |
+
+### 9.6 GST returns
+
+| ID | Rule |
+|---|---|
+| BR-DOC-50 | `[LEGAL]` The system produces the data for **GSTR-1** (outward supplies) and the summary figures for **GSTR-3B**, from documents rather than from re-keyed totals. |
+| BR-DOC-51 | `[LEGAL]` Return data is produced **per period and frozen once filed**. A document issued after filing belongs to the next period, and an amendment to a filed period is an amendment, not a re-computation. |
+| BR-DOC-52 | `[LEGAL]` Filing itself is **out of scope**. Steleios produces the figures and the export; the shop or its accountant files them. This keeps the system out of a regulated filing role, in the same spirit as staying out of payments. |
+| BR-DOC-53 | `[MONEY]` Any figure on a return traces to the documents that produced it, in one click. An accountant who cannot see what a number is made of will not trust it, and will re-key it into a spreadsheet. |
+
+### 9.7 Accounting export
+
+| ID | Rule |
+|---|---|
+| BR-DOC-60 | Documents export in a form an accountant can use — Tally-compatible XML and CSV at minimum, with an option to export a period in full. |
+| BR-DOC-61 | `[LEGAL]` Export works in every subscription state, including dormant (BR-LIC-31). A shop's books are its own. |
+| BR-DOC-62 | Exports are idempotent and re-runnable, and record what was exported and when, so a period is not double-posted into the accounting system. |
+| BR-DOC-63 | `[SEC]` Exports containing customer or supplier details require an appropriate role and are audited with the row count and the period (BR-RPT-05). |
+
+---
+
+### Withdrawn — payment gateway integration
+
+<details>
+<summary>Razorpay processing, webhooks and COD as a payment path (superseded by ADR 0008)</summary>
+
+**Withdrawn.** Steleios does not process payments. These rules are retained rather than deleted because they are a correct design for gateway integration should online payment ever be reintroduced (ADR 0008, "Revisiting"), and because the webhook idempotency discipline they describe still governs any provider callback — courier tracking, for instance.
 
 ### Features
 
@@ -1043,6 +1139,36 @@ Because the platform never sees counter money move, reconciliation is not an aud
 | BR-COD-04 | COD is unavailable to customers with 2 or more undelivered-refused COD orders in the previous 180 days. |
 | BR-COD-05 | A COD order records payment as collected at delivery, moving to `paid` at that point for accounting purposes. |
 | BR-COD-06 | Discounts flagged `online_payment_only` are unavailable when COD is selected; selecting COD removes them and re-prices, with the change shown to the customer. |
+
+</details>
+
+---
+
+## 9A. Storefront orders — payment on delivery or by UPI QR
+
+The storefront takes **orders**, not payments (ADR 0008). A customer chooses how they will pay, and the shop records the payment when it arrives.
+
+| Method | When the customer pays | What Steleios does |
+|---|---|---|
+| **Payment on delivery** | On handover — cash or the delivery person's UPI QR | Records the payment at delivery |
+| **UPI QR** | On or after placing the order, by scanning the shop's QR | Records the payment when the shop confirms receipt |
+
+### Business rules
+
+| ID | Rule |
+|---|---|
+| BR-STO-01 | `[MONEY]` Placing an order **never** asserts payment. An order enters `awaiting_payment` (UPI) or `confirmed_cod` (payment on delivery), and reaches `paid_unverified` only when a payment is recorded (BR-CPM-02). |
+| BR-STO-02 | `[MONEY]` Stock is reserved at order placement exactly as at checkout (BR-CHK-01, BR-BAT-11). The reservation is what stops the shop selling the same unit twice while a customer arranges payment. |
+| BR-STO-03 | `[MONEY]` A UPI order's reservation window is longer than a card checkout's — the customer may pay minutes later — but it is bounded and stated to the customer. On expiry the order is cancelled and the stock released (BR-CHK-09). |
+| BR-STO-04 | `[LEGAL]` The customer is shown, before confirming: the amount, how to pay, and what happens if they do not. No ambiguity about whether an order is paid. |
+| BR-STO-05 | The UPI QR displayed is the **shop's own static QR** with the amount and the order number shown alongside it as text. Steleios does not generate a dynamic payment QR, because generating one would imply a verification it cannot perform (BR-CPM-09). |
+| BR-STO-06 | `[MONEY]` The customer submits their **transaction reference** after paying, and a member of staff confirms receipt against the shop's own bank or UPI app before the order advances. A customer-entered reference alone is a claim, never a confirmation. |
+| BR-STO-07 | `[SEC]` A customer-supplied reference is untrusted input: format-validated, checked for reuse across all payments (BR-CPM-06), and never trusted to release goods on its own. |
+| BR-STO-08 | `[MONEY]` **Payment-on-delivery orders carry delivery risk.** A refused delivery costs the shop the trip and returns the stock. Risk controls apply as they did for COD: pincode serviceability, an order-value cap, phone verification, and a refusal history check (BR-COD-01, BR-COD-02, BR-COD-04). |
+| BR-STO-09 | `[MONEY]` Payment taken at delivery is recorded against the order with its tender type and reference, and reconciles like any other payment (BR-CPM-20). Cash collected by a delivery person is reconciled against their round, not only against the order. |
+| BR-STO-10 | `[LEGAL]` The invoice is issued when the goods go out, not when payment clears, because the supply has happened (BR-DOC-13). An unpaid invoice is a receivable, which is what the ageing report is for (BR-DOC-42). |
+| BR-STO-11 | Order status is honest to the customer throughout: placed, awaiting payment, payment received, packed, dispatched, delivered. "Awaiting payment" is never dressed up as "processing". |
+| BR-STO-12 | `[MONEY]` An order abandoned without payment releases its stock and is recorded as abandoned. Abandonment rate by payment method is reported — if UPI orders abandon far more than delivery ones, that is a finding worth acting on. |
 
 ---
 

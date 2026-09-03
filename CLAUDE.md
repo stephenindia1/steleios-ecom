@@ -46,7 +46,7 @@ Every rule has a stable ID. **Cite the ID in code comments, test names, commit m
 12. Rounding is round-half-up, per line, then summed — in exactly one function.
 13. **Snapshot everything on the order.** Price, title, SKU, GST rate, rate-row ID, UoM, conversion factor, batch allocation, return window. An order is a historical record and MUST NOT re-read live data.
 14. Idempotency keys on order creation; webhook idempotency on the provider event ID. Duplicates *will* arrive.
-15. The browser payment callback is **not** proof of payment. Only a verified webhook advances an order to paid.
+15. **Steleios records payments; it never processes them** (ADR 0008). No gateway, no card data, no payment credentials. Nothing in this system verifies a payment at the moment of sale, so **reconciliation against the bank statement, UPI settlement and card terminal batch is the only proof** — and it is the primary financial control of the product, not an audit afterthought. A recorded payment sits in `paid_unverified` until matched, and verified and unverified takings are never totalled as one number.
 
 ## 3. Architecture
 
