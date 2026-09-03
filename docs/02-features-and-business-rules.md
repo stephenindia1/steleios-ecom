@@ -1322,6 +1322,81 @@ Goods that leave in good condition and arrive damaged were damaged in someone's 
 | BR-DVM-19 | `[MONEY]` A single incident is an incident. **A pattern is a finding**, and the reports are built to show patterns: damage rate per custodian against the shop average, per route, per product category, over time. One broken jar tells you nothing; one person breaking jars every week tells you a great deal. |
 | BR-DVM-20 | Reporting damage promptly and with evidence MUST NOT worsen a custodian's position compared with concealing it. Where a policy is applied, prompt disclosure counts in the custodian's favour — otherwise the system is paying people to hide problems. |
 
+### 9A.5 Acceptance — payment transfers risk to the customer
+
+**Payment is acceptance.** The customer inspected the goods, agreed what they were keeping, the invoice was issued for exactly that, and they paid it. At that moment custody and risk pass from the shop to the customer.
+
+This is why the whole invoice-at-the-door flow is the right shape: it creates a single, evidenced moment of acceptance instead of a dispute about what was in a box that left three days ago.
+
+```
+custody:   dispatcher ──► delivery person ──► CUSTOMER
+                        (accepts consignment)   (pays invoice)
+```
+
+| ID | Rule |
+|---|---|
+| BR-ACC-01 | `[MONEY]` Payment against the issued invoice constitutes the customer's **acceptance of the goods in their visible condition** and of the invoice contents. Custody and risk transfer at that point, and the shop's custody chain closes (BR-DVM-04). |
+| BR-ACC-02 | `[LEGAL]` The acceptance record is the evidence: the invoice, its acknowledgement (BR-DMG-11), the payment, and the timestamps. Together they answer "what did they receive and what did they agree to" without anyone relying on memory. |
+| BR-ACC-03 | `[LEGAL]` The customer is told **before** paying that payment confirms acceptance of visible condition, and is given the opportunity to inspect. A term the customer was never shown is not a term they agreed to. |
+| BR-ACC-04 | `[MONEY]` A later claim of **visible damage** — crushed, dented, broken, obviously leaking — is refused by default and answered with the acceptance record. That is the point of inspecting at the door. |
+| BR-ACC-05 | Post-acceptance claims are still **recorded**, whatever their outcome, and reported by route, custodian and product. A rise in "accepted then complained" is either a doorstep inspection not really happening or a packing problem, and both are worth knowing. |
+
+#### What acceptance does not cover
+
+> **`[LEGAL]` Acceptance settles condition, not conformity.** Statutory rights under the Consumer Protection Act 2019 survive it, and a term saying otherwise is unenforceable. Refusing a legitimate claim by pointing at "you paid, so you accepted" is how a shop loses a consumer forum case it should have settled for the price of one item.
+
+| ID | Rule |
+|---|---|
+| BR-ACC-10 | `[LEGAL]` Acceptance covers **visible condition only**. It does not waive: a latent defect in a sealed product, goods not as described, a wrong item, an expired or short-dated batch, unsafe or spoiled food, a missing item inside sealed packaging, or a manufacturer's warranty. |
+| BR-ACC-11 | `[LEGAL]` Food safety and expiry obligations are **never** discharged by acceptance. A customer who gets home and finds an expired or spoiled item has a valid claim however thoroughly they inspected the outside of the box (BR-ATR-11, BR-BAT-20). |
+| BR-ACC-12 | `[LEGAL]` A claim in the categories above routes to the **normal returns process** (§12) with its statutory window, not to the doorstep-damage path. The system MUST NOT be able to refuse such a claim automatically on the grounds of acceptance. |
+| BR-ACC-13 | `[LEGAL]` The distinction is recorded per claim — `visible_condition` versus `conformity` — because they have different answers, different windows and different legal footing. Collapsing them into "damaged" loses the only thing that determines the outcome. |
+| BR-ACC-14 | `[MONEY]` Where a conformity claim is upheld after acceptance, it is a **credit note** against the issued invoice (BR-DOC-30) and the stock returns to `quarantine` (BR-RET-07). The invoice itself is never altered. |
+| BR-ACC-15 | Acceptance events (`order.accepted`, `risk.transferred`, `claim.post_acceptance_raised`, `claim.post_acceptance_resolved`) are emitted per doc 06 §3. |
+
+### 9A.6 Proof of delivery — a photograph on every delivery
+
+**Every delivery is photographed at handover, and payment cannot be recorded until it is.** Not only the damaged ones.
+
+This is what makes acceptance defensible. Refusing a later visible-damage claim (BR-ACC-04) rests on being able to show the condition of the goods when they changed hands — and a photograph taken only when something looked wrong proves nothing about the deliveries where nobody looked.
+
+| ID | Rule |
+|---|---|
+| BR-POD-01 | `[MONEY]` A proof-of-delivery photograph is **mandatory on every delivery**. The invoice is not issued and payment is not recorded until one has been captured. |
+| BR-POD-02 | `[SEC]` The photograph is **captured in-app from the camera**. Choosing an existing image from the gallery is prohibited, or an old photo can be re-used to evidence a delivery that never happened. |
+| BR-POD-03 | `[SEC]` Capture time and location are bound to the image at capture and stored with it, not taken from the upload (BR-DVM-12). |
+| BR-POD-04 | `[LEGAL]` The photograph is **of the goods only — never of a person.** The frame shows the delivered items and enough context to identify them; it does not show the customer, the delivery person, or anyone else. This is a hard rule, not a preference (BR-POD-22). |
+| BR-POD-05 | The capture screen states "photograph the items, not the customer" at the moment of capture, and the guidance is repeated in delivery training. A rule nobody is reminded of at the point of action is a rule that erodes. |
+| BR-POD-06 | `[LEGAL]` A photograph found to contain a person is deleted on discovery and re-taken where the delivery is still open. Reported occurrences are a training finding, not a disciplinary one — the aim is fewer such photographs, not fewer reports of them. |
+
+#### Capture blocks; upload does not
+
+> **The control is the capture, not the round trip.** A delivery person in a stairwell with one bar must not be unable to complete a sale because a 2 MB image is still uploading. Blocking on upload would produce exactly the workaround that defeats the control: doing the delivery outside the app and reconciling it later.
+
+| ID | Rule |
+|---|---|
+| BR-POD-10 | `[MONEY]` **Capture is blocking; upload is not.** The invoice is issued once the photograph is captured and its hash recorded. The image uploads in the background with retry and aggressive compression. |
+| BR-POD-11 | `[SEC]` The hash is recorded at capture and verified on arrival. An image that does not match its recorded hash is rejected and raises an exception — this is what stops a photograph being substituted between capture and upload. |
+| BR-POD-12 | `[MONEY]` A photograph unuploaded past a configured window (default 2 hours, or end of round if sooner) is an **exception naming the custodian**. Deliveries with permanently missing evidence are reported, because a pattern of them is how the control gets hollowed out. |
+| BR-POD-13 | Images are compressed on the device to a stated maximum. Condition evidence needs a legible photograph, not a high-resolution one, and a delivery fleet generates a great many of them. |
+
+#### Privacy — this is a photograph of somebody's home
+
+> **`[LEGAL]` A proof-of-delivery photograph is personal data**, often of a customer's doorway and sometimes of the customer. It is collected for one purpose and must be governed like any other personal data the shop holds (BR-DAT-06, BR-SEC-07).
+
+| ID | Rule |
+|---|---|
+| BR-POD-20 | `[LEGAL]` The purpose is **condition and delivery evidence, and nothing else.** These images MUST NOT be used for marketing, for staff performance surveillance beyond delivery reconciliation, or for any analysis not stated to the customer. |
+| BR-POD-21 | `[LEGAL]` The customer is told at ordering that deliveries are photographed, and why. Photographing someone's home without telling them is not acceptable, whatever the operational benefit. |
+| BR-POD-22 | `[LEGAL]` **Photographing a person is prohibited outright.** Not discouraged, not avoided where possible — prohibited. The subject is the goods. A customer, a delivery person, a passer-by or a child in frame makes the photograph non-compliant, and it is deleted rather than stored (BR-POD-06). |
+| BR-POD-22a | `[LEGAL]` The prohibition is stated to the customer at ordering and shown to the delivery person at capture, so both sides know what is and is not being recorded (BR-POD-05, BR-POD-21). |
+| BR-POD-22b | `[LEGAL]` Where a customer objects to any photograph being taken, a signature or OTP acknowledgement is accepted instead and the objection is recorded. Proof of delivery is not worth overriding someone's refusal to be photographed at their own front door (BR-DMG-11). |
+| BR-POD-22c | `[SEC]` The system MUST NOT run face detection, recognition or any biometric processing over these images — not to enforce this rule, and not for any other purpose. Building a face-detection pipeline across every customer's doorstep would be a far worse privacy outcome than the problem it policed. The controls are the instruction at capture, the deletion on discovery, and the audit of access. |
+| BR-POD-23 | `[LEGAL]` Retention is bounded: a routine proof-of-delivery photograph is deleted after a stated period (default 90 days). Images attached to an open claim or dispute are retained until it closes, and then follow the same rule. |
+| BR-POD-24 | `[SEC]` Access is restricted to the roles that need it — customer care, manager, finance for a dispute — and every access is audited. A delivery evidence store is a searchable archive of where customers live, and it must be treated as one. |
+| BR-POD-25 | `[SEC]` Images are stored in object storage, private, encrypted at rest, served only through short-lived authenticated links, and stripped of EXIF beyond the capture metadata this section requires (BR-MED-04, BR-MED-07). |
+| BR-POD-26 | Proof-of-delivery events (`pod.captured`, `pod.uploaded`, `pod.upload_overdue`, `pod.hash_mismatch`, `pod.accessed`) are emitted per doc 06 §3. |
+
 ---
 
 ## 10. Order lifecycle
